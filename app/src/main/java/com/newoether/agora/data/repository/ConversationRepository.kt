@@ -545,6 +545,7 @@ class ConversationRepository(
             uncachedInputTokenCount = tokenUsage?.uncachedInputTokenCount,
             outputTokenCount = tokenUsage?.outputTokenCount,
             reasoningTokenCount = tokenUsage?.reasoningTokenCount,
+            generationDurationMs = tokenUsage?.generationDurationMs,
             status = status,
             thoughtTimeMs = thoughtTimeMs,
             toolCallJson = MessagePersistenceGuard.encodeSegmentsBounded(persistedSegments),

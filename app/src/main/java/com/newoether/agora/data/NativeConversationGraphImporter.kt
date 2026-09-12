@@ -323,6 +323,7 @@ internal class NativeConversationGraphImporter(
             uncachedInputTokenCount = uncachedInputTokenCount,
             outputTokenCount = outputTokenCount,
             reasoningTokenCount = reasoningTokenCount,
+            generationDurationMs = generationDurationMs?.takeIf { it > 0 },
             status = if (
                 assignment.runId in recoveredRunIds &&
                 parsedParticipant == Participant.MODEL &&
@@ -785,6 +786,7 @@ internal class NativeConversationGraphImporter(
         val uncachedInputTokenCount: Int? = null,
         val outputTokenCount: Int? = null,
         val reasoningTokenCount: Int? = null,
+        val generationDurationMs: Long? = null,
         val status: String = "SUCCESS",
         val participant: String = "MODEL",
         val timestamp: Long,

@@ -458,6 +458,19 @@ class GenerationManager(
                 event: StreamEvent,
                 providerAnswerStart: Int,
             ) {
+                // Generation timing (upstream 168a9e55): time between the first and last content
+                // of each provider request, excluding hosted tools and retried attempts.
+                when (event) {
+                    is StreamEvent.TextChunk ->
+                        if (event.text.isNotEmpty()) tokenUsageAccumulator.observeGenerationContent()
+                    is StreamEvent.ThoughtChunk ->
+                        if (event.thought.isNotEmpty()) tokenUsageAccumulator.observeGenerationContent()
+                    is StreamEvent.ToolCallUpdate ->
+                        if (event.arguments.isNotEmpty()) tokenUsageAccumulator.observeGenerationContent()
+                    is StreamEvent.HostedToolCallUpdate -> tokenUsageAccumulator.pauseGeneration()
+                    is StreamEvent.Retrying -> tokenUsageAccumulator.resetGenerationTiming()
+                    else -> Unit
+                }
                 when (event) {
                     is StreamEvent.TextChunk -> {
                         val answerText = if (currentStatus == MessageStatus.THINKING) event.text.trimStart() else event.text

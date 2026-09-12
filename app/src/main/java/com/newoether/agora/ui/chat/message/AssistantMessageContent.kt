@@ -68,6 +68,7 @@ internal data class TokenUsagePresentation(
     val input: Int?,
     val cachedInput: Int?,
     val output: Int?,
+    val generationTokensPerSecond: Double? = null,
 )
 
 internal fun tokenUsagePresentation(
@@ -95,6 +96,8 @@ internal fun tokenUsagePresentation(
         input = input,
         cachedInput = usage.cachedInputTokenCount,
         output = output,
+        generationTokensPerSecond = usage.generationDurationMs?.takeIf { it > 0 }
+            ?.let { duration -> output?.takeIf { it > 0 }?.toDouble()?.times(1000.0)?.div(duration) },
     )
 }
 
