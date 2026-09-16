@@ -1185,7 +1185,7 @@
     <string name="crash_submitted">崩溃报告已发送，谢谢！</string>
     <string name="settings_group_network">网络</string>
     <string name="settings_proxy">代理</string>
-    <string name="settings_proxy_desc">通过 HTTP 或 SOCKS 代理转发网络流量</string>
+    <string name="settings_proxy_desc">通过 HTTP、HTTPS 或 SOCKS 代理转发网络流量</string>
     <string name="proxy_enable">启用代理</string>
     <string name="proxy_enable_desc">将应用的所有网络流量通过代理转发</string>
     <string name="proxy_type">类型</string>
