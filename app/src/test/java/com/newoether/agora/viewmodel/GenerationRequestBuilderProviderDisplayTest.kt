@@ -155,11 +155,49 @@ class GenerationRequestBuilderProviderDisplayTest {
     }
 
     @Test
-    fun `remote and ollama ignore a true low context conversation override`() = runTest {
+    fun `remote and ollama honor a true low context conversation override`() = runTest {
         listOf(Constants.PROVIDER_OPENAI, Constants.PROVIDER_OLLAMA).forEach { providerName ->
             val fixture = RequestBuilderFixture(
                 providerName = providerName,
                 lowContextModeEnabled = true,
+            )
+
+            val snapshot = fixture.builder.captureContextProjectionSnapshot(
+                conversationId = "conversation",
+                modelId = fixture.modelId,
+            )
+
+            assertTrue(providerName, snapshot.config.lowContextModeEnabled)
+            assertNull(providerName, snapshot.config.effectiveSystemPrompt)
+            assertNull(providerName, snapshot.config.promptTemplate)
+            assertFalse(providerName, snapshot.context.skillReadAccess)
+        }
+    }
+
+    @Test
+    fun `local follows the global low context default without an override`() = runTest {
+        val fixture = RequestBuilderFixture(
+            providerName = Constants.PROVIDER_LOCAL,
+            lowContextModeEnabled = null,
+            localLowContextDefault = true,
+        )
+
+        val snapshot = fixture.builder.captureContextProjectionSnapshot(
+            conversationId = "conversation",
+            modelId = fixture.modelId,
+        )
+
+        assertTrue(snapshot.config.lowContextModeEnabled)
+        assertNull(snapshot.config.effectiveSystemPrompt)
+    }
+
+    @Test
+    fun `remote and ollama ignore the local low context default`() = runTest {
+        listOf(Constants.PROVIDER_OPENAI, Constants.PROVIDER_OLLAMA).forEach { providerName ->
+            val fixture = RequestBuilderFixture(
+                providerName = providerName,
+                lowContextModeEnabled = null,
+                localLowContextDefault = true,
             )
 
             val snapshot = fixture.builder.captureContextProjectionSnapshot(
@@ -269,7 +307,8 @@ class GenerationRequestBuilderProviderDisplayTest {
 
 private class RequestBuilderFixture(
     providerName: String,
-    lowContextModeEnabled: Boolean,
+    lowContextModeEnabled: Boolean?,
+    localLowContextDefault: Boolean = false,
 ) {
     companion object {
         const val COMPACT_PROMPT = "compact prompt"
@@ -342,7 +381,7 @@ private class RequestBuilderFixture(
         every { settings.openAiServiceTier } returns MutableStateFlow("auto")
         every { settings.webSearchEnabled } returns MutableStateFlow(true)
         every { settings.shellEnabled } returns MutableStateFlow(true)
-        every { settings.localLowContextModeEnabled } returns MutableStateFlow(false)
+        every { settings.localLowContextModeEnabled } returns MutableStateFlow(localLowContextDefault)
         every { settings.contextCompactModel } returns MutableStateFlow(null)
         every { settings.contextCompactPrompt } returns MutableStateFlow(COMPACT_PROMPT)
         every { settings.contextCompactEnabled } returns MutableStateFlow(true)

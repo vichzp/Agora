@@ -90,9 +90,9 @@ internal fun effectiveConversationControls(
         webSearchEnabled = globalWebSearch && (conversationOverride?.webSearchEnabled ?: true),
         shellAvailable = globalShell,
         shellEnabled = globalShell && (conversationOverride?.shellEnabled ?: true),
-        showLowContextMode = isEmbeddedLocalModel,
-        lowContextModeEnabled = isEmbeddedLocalModel &&
-            (conversationOverride?.lowContextModeEnabled ?: globalLocalLowContextModeEnabled),
+        showLowContextMode = true,
+        lowContextModeEnabled = conversationOverride?.lowContextModeEnabled
+            ?: (isEmbeddedLocalModel && globalLocalLowContextModeEnabled),
         contextWindow = ContextBudget.normalize(conversationOverride?.contextWindow ?: maxContextWindow),
     )
 }
