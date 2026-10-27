@@ -29,6 +29,9 @@ android {
         targetSdk = 36
         versionCode = 31
         versionName = "2.1.0"
+        // VxNet fork: installs beside upstream Agora under its own package and key
+        applicationIdSuffix = ".vx"
+        versionNameSuffix = "-vx1"
 
 
         ndk {
