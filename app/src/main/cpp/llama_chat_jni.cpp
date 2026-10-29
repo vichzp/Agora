@@ -2,8 +2,12 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <deque>
+#include <memory>
+#include <mutex>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 #include <cstring>
 #include <cstdint>
@@ -39,6 +43,30 @@ struct ChatHandle {
     std::atomic<bool> cancelled{false};
     std::vector<llama_token> decoded_tokens;
     mtmd_context * mtmd_ctx = nullptr;  // multimodal context (for vision models)
+
+    // llama.cpp's PEG parser arena can no longer be serialized, so a template result carries
+    // a key into this cache instead. Only the few most recent template results stay parseable.
+    std::mutex parsers_mutex;
+    std::deque<std::pair<std::string, std::shared_ptr<const common_peg_arena>>> parsers;
+    uint64_t next_parser_id = 0;
+    static constexpr size_t MAX_CACHED_PARSERS = 8;
+
+    std::string store_parser(const common_peg_arena & parser) {
+        if (parser.empty()) return {};
+        std::lock_guard<std::mutex> lock(parsers_mutex);
+        std::string key = "agora-parser:" + std::to_string(++next_parser_id);
+        parsers.emplace_back(key, std::make_shared<const common_peg_arena>(parser));
+        while (parsers.size() > MAX_CACHED_PARSERS) parsers.pop_front();
+        return key;
+    }
+
+    std::shared_ptr<const common_peg_arena> find_parser(const std::string & key) {
+        std::lock_guard<std::mutex> lock(parsers_mutex);
+        for (const auto & entry : parsers) {
+            if (entry.first == key) return entry.second;
+        }
+        return nullptr;
+    }
 };
 
 static bool abort_callback(void * data) {
@@ -336,6 +364,7 @@ static bool read_string_field(
 
 static jobject make_template_result(
     JNIEnv * env,
+    ChatHandle & handle,
     const common_chat_params & params,
     bool supports_tools
 ) {
@@ -384,12 +413,14 @@ static jobject make_template_result(
         env->DeleteLocalRef(value);
     }
 
-    jstring prompt = utf8_to_jstring(env, params.prompt.data(), params.prompt.size());
+    const std::string prompt_text = params.prompt.str();
+    jstring prompt = utf8_to_jstring(env, prompt_text.data(), prompt_text.size());
     jstring grammar = utf8_to_jstring(env, params.grammar.data(), params.grammar.size());
     jstring generation_prompt = utf8_to_jstring(
         env, params.generation_prompt.data(), params.generation_prompt.size()
     );
-    jstring parser = utf8_to_jstring(env, params.parser.data(), params.parser.size());
+    const std::string parser_key = handle.store_parser(params.parser);
+    jstring parser = utf8_to_jstring(env, parser_key.data(), parser_key.size());
     jobject result = env->NewObject(
         result_class, result_ctor,
         prompt, supports_tools ? JNI_TRUE : JNI_FALSE,
@@ -501,21 +532,21 @@ struct NativeChatParser {
     std::string generated_text;
     std::string initialization_error;
 
-    explicit NativeChatParser(const TemplateSamplingMetadata & metadata) {
+    NativeChatParser(const TemplateSamplingMetadata & metadata, ChatHandle & handle) {
         params.format = metadata.format;
-        params.generation_prompt = metadata.generation_prompt;
-        params.parse_tool_calls = true;
+        params.generation_prompt = common_chat_input(metadata.generation_prompt);
         if (metadata.parser.empty()) {
             if (metadata.format != COMMON_CHAT_FORMAT_CONTENT_ONLY) {
                 initialization_error = "Chat template parser metadata is missing";
             }
             return;
         }
-        try {
-            params.parser.load(metadata.parser);
-        } catch (const std::exception & exception) {
-            initialization_error = exception.what();
+        const auto parser = handle.find_parser(metadata.parser);
+        if (!parser) {
+            initialization_error = "Chat template parser has expired; apply the template again";
+            return;
         }
+        params.parser = *parser;
     }
 
     bool update(
@@ -533,7 +564,9 @@ struct NativeChatParser {
         }
         generated_text.append(data, length);
         try {
-            common_chat_msg next = common_chat_parse(generated_text, is_partial, params);
+            common_chat_msg next = common_chat_parse(
+                common_chat_input(generated_text), is_partial, params
+            );
             if (next.empty()) {
                 if (!is_partial) message = {};
                 return true;
@@ -891,19 +924,18 @@ Java_com_newoether_agora_api_LlamaChatEngine_nativeChatApplyTemplate(
 
     const auto caps = common_chat_templates_get_caps(handle->chat_templates.get());
     const auto supports = [&](const char * name) {
-        const auto found = caps.find(name);
-        return found != caps.end() && found->second;
+        return caps.contains(name) && caps.at(name).is_boolean() && caps.at(name).get<bool>();
     };
     const bool supports_tools = supports("supports_tools") && supports("supports_tool_calls");
     if ((!inputs.tools.empty() || has_tool_history) && !supports_tools) {
-        return make_template_result(env, common_chat_params{}, false);
+        return make_template_result(env, *handle, common_chat_params{}, false);
     }
 
     try {
         const common_chat_params params = common_chat_templates_apply(
             handle->chat_templates.get(), inputs
         );
-        return make_template_result(env, params, supports_tools);
+        return make_template_result(env, *handle, params, supports_tools);
     } catch (const std::exception &) {
         LOGE("Failed to apply model chat template");
         return nullptr;
@@ -1033,7 +1065,7 @@ Java_com_newoether_agora_api_LlamaChatEngine_nativeChatGenerate(
     int32_t callback_tokens = 0;
     std::string utf8_pending;
     std::string callback_buffer;
-    NativeChatParser parser(metadata);
+    NativeChatParser parser(metadata, *handle);
     const char * stop_reason = nullptr;
     std::string failure;
     bool consumer_closed = false;
@@ -1281,8 +1313,13 @@ Java_com_newoether_agora_api_LlamaChatEngine_nativeChatGenerateWithImages(
         env->ReleaseStringUTFChars(jpath, cpath);
         env->DeleteLocalRef(jpath);
 
-        bitmaps[i] = mtmd_helper_bitmap_init_from_file(handle->mtmd_ctx,
-                                                       image_path_storage[i].c_str());
+        const auto loaded = mtmd_helper_bitmap_init_from_file(
+            handle->mtmd_ctx, image_path_storage[i].c_str(), false,
+            mtmd_helper_init_opt_default()
+        );
+        // Agora sends still images only; drop any video helper the loader created.
+        if (loaded.video_ctx) mtmd_helper_video_free(loaded.video_ctx);
+        bitmaps[i] = loaded.bitmap;
         if (!bitmaps[i]) {
             LOGE("Failed to load image at index %d of %d", i, n_images);
             // Clean up already-loaded bitmaps
@@ -1388,7 +1425,7 @@ Java_com_newoether_agora_api_LlamaChatEngine_nativeChatGenerateWithImages(
     int32_t callback_tokens = 0;
     std::string utf8_pending;
     std::string callback_buffer;
-    NativeChatParser parser(metadata);
+    NativeChatParser parser(metadata, *handle);
     const char * stop_reason = nullptr;
     std::string failure;
     bool consumer_closed = false;
