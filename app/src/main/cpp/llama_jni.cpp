@@ -58,7 +58,11 @@ Java_com_newoether_agora_api_LlamaEngine_nativeLoadModel(
     }
 
     // Load model
+    // Embeddings stay on the CPU: no GPU device, so nothing is offloaded to one.
+    ggml_backend_dev_t no_devices[1] = {nullptr};
     llama_model_params model_params = llama_model_default_params();
+    model_params.devices = no_devices;
+    model_params.n_gpu_layers = 0;
     handle->model = llama_model_load_from_file(path_str, model_params);
     env->ReleaseStringUTFChars(path, path_str);
 

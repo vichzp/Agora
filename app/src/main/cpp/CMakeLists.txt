@@ -22,9 +22,37 @@ set(BUILD_SHARED_LIBS ON CACHE BOOL "" FORCE)
 set(GGML_NATIVE OFF CACHE BOOL "" FORCE)
 set(GGML_BACKEND_DL ON CACHE BOOL "" FORCE)
 set(GGML_CPU_ALL_VARIANTS ON CACHE BOOL "" FORCE)
-set(GGML_CPU_KLEIDIAI OFF CACHE BOOL "" FORCE)
+# Arm's optimised Q4_0 kernels (dotprod/i8mm/SME2), picked per CPU variant at runtime.
+set(GGML_CPU_KLEIDIAI ON CACHE BOOL "" FORCE)
 set(GGML_VULKAN OFF CACHE BOOL "" FORCE)
 set(GGML_OPENMP OFF CACHE BOOL "" FORCE)
+
+# Adreno GPU backend as its own libggml-opencl.so. It links against the Khronos ICD loader
+# only to resolve symbols; the loader is not packaged, so at runtime libOpenCL.so is the
+# phone's own driver (declared with <uses-native-library> in the manifest). Phones without
+# one simply do not list an OpenCL device.
+option(AGORA_OPENCL "Build the OpenCL (Adreno) backend" ON)
+if(AGORA_OPENCL AND ANDROID_ABI STREQUAL "arm64-v8a")
+    include(FetchContent)
+    FetchContent_Declare(opencl_headers
+        URL https://github.com/KhronosGroup/OpenCL-Headers/archive/refs/tags/v2024.10.24.tar.gz
+        URL_HASH SHA256=159f2a550592bae49859fee83d372acd152328fdf95c0dcd8b9409f8fad5db93
+    )
+    FetchContent_MakeAvailable(opencl_headers)
+    set(OPENCL_ICD_LOADER_HEADERS_DIR "${opencl_headers_SOURCE_DIR}" CACHE PATH "" FORCE)
+    set(OPENCL_ICD_LOADER_BUILD_TESTING OFF CACHE BOOL "" FORCE)
+    set(ENABLE_OPENCL_LAYERINFO OFF CACHE BOOL "" FORCE)
+    FetchContent_Declare(opencl_icd_loader
+        URL https://github.com/KhronosGroup/OpenCL-ICD-Loader/archive/refs/tags/v2024.10.24.tar.gz
+        URL_HASH SHA256=95f2f0cda375b13d2760290df044ebea9c6ff954a7d7faa0867422442c9174dc
+    )
+    FetchContent_MakeAvailable(opencl_icd_loader)
+    set(OpenCL_INCLUDE_DIR "${opencl_headers_SOURCE_DIR}" CACHE PATH "" FORCE)
+    set(OpenCL_LIBRARY OpenCL CACHE STRING "" FORCE)  # the loader target above
+    set(GGML_OPENCL ON CACHE BOOL "" FORCE)
+    set(GGML_OPENCL_EMBED_KERNELS ON CACHE BOOL "" FORCE)
+    set(GGML_OPENCL_USE_ADRENO_KERNELS ON CACHE BOOL "" FORCE)
+endif()
 
 add_subdirectory(${LLAMA_CPP_DIR} ${CMAKE_CURRENT_BINARY_DIR}/llama)
 add_subdirectory(${LLAMA_CPP_DIR}/tools/mtmd ${CMAKE_CURRENT_BINARY_DIR}/mtmd)
@@ -38,6 +66,20 @@ set(AGORA_ANDROID_CPU_BACKENDS
     ggml-cpu-android_armv9.2_1
     ggml-cpu-android_armv9.2_2
 )
+# Optional accelerator backends are dlopened like the CPU variants, so they ship beside them.
+# The OpenCL ICD loader is only a link-time stand-in for the phone's driver: keep it out of
+# the packaged directory (the Gradle packaging rules exclude it as well).
+if(TARGET ggml-opencl)
+    set_target_properties(ggml-opencl PROPERTIES
+        LIBRARY_OUTPUT_DIRECTORY ${CMAKE_LIBRARY_OUTPUT_DIRECTORY}
+    )
+endif()
+if(TARGET OpenCL)
+    set_target_properties(OpenCL PROPERTIES
+        LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/opencl-link-stub
+    )
+endif()
+
 foreach(backend IN LISTS AGORA_ANDROID_CPU_BACKENDS)
     if(NOT TARGET ${backend})
         message(FATAL_ERROR "Required Android CPU backend target is missing: ${backend}")

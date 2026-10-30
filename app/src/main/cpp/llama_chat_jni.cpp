@@ -14,6 +14,7 @@
 #include <cstdio>
 #include <android/log.h>
 #include "llama.h"
+#include "ggml-backend.h"
 #include "chat.h"
 #include "sampling.h"
 #include "nlohmann/json.hpp"
@@ -40,6 +41,7 @@ struct ChatHandle {
     const llama_vocab * vocab = nullptr;
     common_chat_templates_ptr chat_templates;
     std::string path;
+    std::string backend = "CPU";  // device the model was loaded on
     int32_t n_ctx = 0;
     std::atomic<bool> cancelled{false};
     std::vector<llama_token> decoded_tokens;
@@ -764,31 +766,43 @@ static bool is_preserved_token(
 
 extern "C" {
 
-JNIEXPORT jlong JNICALL
-Java_com_newoether_agora_api_LlamaChatEngine_nativeChatLoadModel(
-    JNIEnv * env, jclass /*clazz*/, jstring path, jint n_ctx) {
+// Accelerator chosen by the app from its chipset table: "CPU", or a ggml backend registry name
+// such as "OpenCL". Read when a chat model loads.
+static std::mutex g_backend_mutex;
+static std::string g_preferred_backend = "CPU";
 
-    const char * path_str = env->GetStringUTFChars(path, nullptr);
-    if (!path_str) return 0;
-
-    ChatHandle * handle = new ChatHandle();
-    if (!handle) {
-        env->ReleaseStringUTFChars(path, path_str);
-        return 0;
+static ggml_backend_dev_t find_accelerator(const std::string & name) {
+    if (name.empty() || name == "CPU") return nullptr;
+    for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
+        ggml_backend_dev_t dev = ggml_backend_dev_get(i);
+        if (ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_CPU) continue;
+        if (name == ggml_backend_reg_name(ggml_backend_dev_backend_reg(dev))) return dev;
     }
+    return nullptr;
+}
+
+// Loads the model and context on `accelerator`, or CPU only when it is null. The device list is
+// always explicit: llama.cpp's defaults would otherwise offload every layer (and large prompt
+// batches) to any GPU backend that happens to load.
+static ChatHandle * load_chat_handle(const char * path_str, jint n_ctx, ggml_backend_dev_t accelerator) {
+    ChatHandle * handle = new ChatHandle();
+    if (!handle) return nullptr;
 
     const auto load_started = std::chrono::steady_clock::now();
+    ggml_backend_dev_t devices[2] = {accelerator, nullptr};
     llama_model_params model_params = llama_model_default_params();
+    model_params.devices = devices;
+    model_params.n_gpu_layers = accelerator ? 999 : 0;
     const auto model_started = std::chrono::steady_clock::now();
     handle->model = llama_model_load_from_file(path_str, model_params);
     handle->path = path_str;  // keys the prompt-prefix snapshots
     const auto model_finished = std::chrono::steady_clock::now();
-    env->ReleaseStringUTFChars(path, path_str);
 
     if (!handle->model) {
-        LOGE("Failed to load model from file");
+        LOGE("Failed to load model from file (backend=%s)",
+             accelerator ? ggml_backend_dev_name(accelerator) : "CPU");
         delete handle;
-        return 0;
+        return nullptr;
     }
 
     handle->vocab = llama_model_get_vocab(handle->model);
@@ -819,7 +833,7 @@ Java_com_newoether_agora_api_LlamaChatEngine_nativeChatLoadModel(
         LOGE("Failed to create context");
         llama_model_free(handle->model);
         delete handle;
-        return 0;
+        return nullptr;
     }
 
     llama_set_abort_callback(handle->ctx, abort_callback, handle);
@@ -834,11 +848,47 @@ Java_com_newoether_agora_api_LlamaChatEngine_nativeChatLoadModel(
     const auto total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
         load_finished - load_started
     ).count();
-    LOGD("Chat load: model_ms=%lld, context_ms=%lld, total_ms=%lld, n_ctx=%d, n_ctx_train=%d",
+    handle->backend = accelerator ? ggml_backend_dev_name(accelerator) : "CPU";
+    LOGD("Chat load: model_ms=%lld, context_ms=%lld, total_ms=%lld, n_ctx=%d, n_ctx_train=%d, backend=%s",
          (long long)model_ms, (long long)context_ms, (long long)total_ms,
-         n_ctx, llama_model_n_ctx_train(handle->model));
+         n_ctx, llama_model_n_ctx_train(handle->model), handle->backend.c_str());
 
+    return handle;
+}
+
+JNIEXPORT jlong JNICALL
+Java_com_newoether_agora_api_LlamaChatEngine_nativeChatLoadModel(
+    JNIEnv * env, jclass /*clazz*/, jstring path, jint n_ctx) {
+
+    const char * path_str = env->GetStringUTFChars(path, nullptr);
+    if (!path_str) return 0;
+
+    std::string preferred;
+    {
+        std::lock_guard<std::mutex> lock(g_backend_mutex);
+        preferred = g_preferred_backend;
+    }
+    ggml_backend_dev_t accelerator = find_accelerator(preferred);
+    if (!accelerator && preferred != "CPU") {
+        LOGD("Preferred backend %s is not available on this device; using CPU", preferred.c_str());
+    }
+    ChatHandle * handle = load_chat_handle(path_str, n_ctx, accelerator);
+    if (!handle && accelerator) {
+        LOGE("Loading on %s failed; retrying on CPU", ggml_backend_dev_name(accelerator));
+        handle = load_chat_handle(path_str, n_ctx, nullptr);
+    }
+    env->ReleaseStringUTFChars(path, path_str);
     return reinterpret_cast<jlong>(handle);
+}
+
+JNIEXPORT void JNICALL
+Java_com_newoether_agora_api_LlamaChatEngine_nativeSetPreferredBackend(
+    JNIEnv * env, jclass /*clazz*/, jstring name) {
+
+    std::string value;
+    if (!read_java_string(env, name, value) || value.empty()) value = "CPU";
+    std::lock_guard<std::mutex> lock(g_backend_mutex);
+    g_preferred_backend = value;
 }
 
 JNIEXPORT jstring JNICALL

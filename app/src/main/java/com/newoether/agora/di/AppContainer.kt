@@ -54,6 +54,9 @@ class AppContainer(
 
     init {
         LocalModelRuntime.initialize(application.applicationInfo.nativeLibraryDir)
+        com.newoether.agora.api.LlamaChatEngine.setPreferredBackend(
+            com.newoether.agora.api.local.LocalAcceleratorTable.preferredBackend()
+        )
         LocalModelRuntime.setPrefixCacheDirectory(
             java.io.File(application.cacheDir, "llama-prefix").absolutePath,
             prefixCacheBudgetBytes(application),
