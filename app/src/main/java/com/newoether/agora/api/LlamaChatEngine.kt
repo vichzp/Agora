@@ -123,6 +123,18 @@ class LlamaChatEngine(
             System.loadLibrary("c++_shared")
             System.loadLibrary("agora_llama")
         }
+
+        @JvmStatic
+        private external fun nativeSetPreferredBackend(name: String)
+
+        /**
+         * Accelerator for chat models loaded from now on: "CPU" or a ggml backend name such as
+         * "OpenCL". Loading falls back to CPU when the backend is missing or fails.
+         */
+        fun setPreferredBackend(name: String) {
+            nativeSetPreferredBackend(name)
+            DebugLog.d(TAG, "Preferred local backend: $name")
+        }
     }
 
     @Volatile
