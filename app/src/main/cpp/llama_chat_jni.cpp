@@ -1,12 +1,15 @@
 #include <jni.h>
 #include <algorithm>
 #include <chrono>
+#include <mutex>
 #include <string>
 #include <vector>
 #include <cstring>
 #include <cstdint>
 #include <cstdio>
 #include "llama.h"
+#include "ggml-backend.h"
+#include "gguf.h"
 #include "chat.h"
 #include "sampling.h"
 #include "mtmd.h"
@@ -49,29 +52,79 @@ static bool abort_callback(void * data) {
 
 extern "C" {
 
-JNIEXPORT jlong JNICALL
-Java_com_newoether_agora_api_LlamaChatEngine_nativeChatLoadModel(
-    JNIEnv * env, jclass /*clazz*/, jstring path, jint n_ctx) {
+// Accelerator chosen by the app from its chipset table: "CPU", or a ggml backend registry name
+// such as "OpenCL". Read when a chat model loads.
+static std::mutex g_backend_mutex;
+static std::string g_preferred_backend = "CPU";
 
-    std::string path_str;
-    if (!read_java_path(env, path, path_str)) return 0;
-
-    ChatHandle * handle = new ChatHandle();
-    if (!handle) {
-        return 0;
+static ggml_backend_dev_t find_accelerator(const std::string & name) {
+    if (name.empty() || name == "CPU") return nullptr;
+    for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
+        ggml_backend_dev_t dev = ggml_backend_dev_get(i);
+        if (ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_CPU) continue;
+        if (name == ggml_backend_reg_name(ggml_backend_dev_backend_reg(dev))) return dev;
     }
+    return nullptr;
+}
+
+// Why the OpenCL GPU should not run this model, or empty when it should. Measured on Adreno 825
+// (Snapdragon 8s Gen 4): dense Q4_0/Q4_K models process prompts 2.5-3x faster on the GPU with
+// generation within about 10%; mixture-of-experts models generate 1.4-2.7x slower there in every
+// format tried; IQ quants lack fast GPU kernels (IQ4_XS has none: every layer falls back with
+// copies). Allows a few odd tensors, since some mixes keep single tensors at another type.
+static std::string opencl_skip_reason(const char * path) {
+    gguf_init_params params{/*no_alloc =*/ true, /*ctx =*/ nullptr};
+    gguf_context * gguf = gguf_init_from_file(path, params);
+    if (!gguf) return "model unreadable";
+    int64_t weights = 0;
+    int64_t unsupported = 0;
+    bool experts = false;
+    for (int64_t i = 0; i < gguf_get_n_tensors(gguf); ++i) {
+        const std::string name = gguf_get_tensor_name(gguf, i);
+        if (name.rfind("blk.", 0) != 0 || name.size() < 7 ||
+            name.compare(name.size() - 7, 7, ".weight") != 0) continue;
+        if (name.find("_exps.") != std::string::npos) experts = true;
+        const ggml_type type = gguf_get_tensor_type(gguf, i);
+        if (type == GGML_TYPE_F32) continue;  // norms and other small vectors
+        ++weights;
+        switch (type) {
+            case GGML_TYPE_F16: case GGML_TYPE_BF16: case GGML_TYPE_Q8_0:
+            case GGML_TYPE_Q4_0: case GGML_TYPE_Q4_1: case GGML_TYPE_Q5_0: case GGML_TYPE_Q5_1:
+            case GGML_TYPE_Q2_K: case GGML_TYPE_Q3_K: case GGML_TYPE_Q4_K:
+            case GGML_TYPE_Q5_K: case GGML_TYPE_Q6_K: case GGML_TYPE_MXFP4:
+                break;
+            default:
+                ++unsupported;
+        }
+    }
+    gguf_free(gguf);
+    if (experts) return "mixture-of-experts runs faster on CPU";
+    if (weights == 0 || unsupported * 10 > weights) return "weights unsupported on GPU";
+    return {};
+}
+
+// Loads the model and context on `accelerator`, or CPU only when it is null. The device list is
+// always explicit: llama.cpp's defaults would otherwise offload every layer (and large prompt
+// batches) to any GPU backend that happens to load.
+static ChatHandle * load_chat_handle(const std::string & path_str, jint n_ctx, ggml_backend_dev_t accelerator) {
+    ChatHandle * handle = new ChatHandle();
+    if (!handle) return nullptr;
 
     const auto load_started = std::chrono::steady_clock::now();
+    ggml_backend_dev_t devices[2] = {accelerator, nullptr};
     llama_model_params model_params = llama_model_default_params();
+    model_params.devices = devices;
+    model_params.n_gpu_layers = accelerator ? 999 : 0;
     const auto model_started = std::chrono::steady_clock::now();
     handle->model = llama_model_load_from_file(path_str.c_str(), model_params);
     handle->path = path_str;  // keys the prompt-prefix snapshots
     const auto model_finished = std::chrono::steady_clock::now();
 
     if (!handle->model) {
-        LOGE("Failed to load model from file");
+        LOGE("Failed to load model from file (backend=%s)",
+             accelerator ? ggml_backend_dev_name(accelerator) : "CPU");
         delete handle;
-        return 0;
+        return nullptr;
     }
 
     handle->vocab = llama_model_get_vocab(handle->model);
@@ -102,7 +155,7 @@ Java_com_newoether_agora_api_LlamaChatEngine_nativeChatLoadModel(
         LOGE("Failed to create context");
         llama_model_free(handle->model);
         delete handle;
-        return 0;
+        return nullptr;
     }
 
     llama_set_abort_callback(handle->ctx, abort_callback, handle);
@@ -117,11 +170,53 @@ Java_com_newoether_agora_api_LlamaChatEngine_nativeChatLoadModel(
     const auto total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
         load_finished - load_started
     ).count();
-    LOGD("Chat load: model_ms=%lld, context_ms=%lld, total_ms=%lld, n_ctx=%d, n_ctx_train=%d",
+    handle->backend = accelerator ? ggml_backend_dev_name(accelerator) : "CPU";
+    LOGD("Chat load: model_ms=%lld, context_ms=%lld, total_ms=%lld, n_ctx=%d, n_ctx_train=%d, backend=%s",
          (long long)model_ms, (long long)context_ms, (long long)total_ms,
-         n_ctx, llama_model_n_ctx_train(handle->model));
+         n_ctx, llama_model_n_ctx_train(handle->model), handle->backend.c_str());
 
+    return handle;
+}
+
+JNIEXPORT jlong JNICALL
+Java_com_newoether_agora_api_LlamaChatEngine_nativeChatLoadModel(
+    JNIEnv * env, jclass /*clazz*/, jstring path, jint n_ctx) {
+
+    std::string path_str;
+    if (!read_java_path(env, path, path_str)) return 0;
+
+    std::string preferred;
+    {
+        std::lock_guard<std::mutex> lock(g_backend_mutex);
+        preferred = g_preferred_backend;
+    }
+    ggml_backend_dev_t accelerator = find_accelerator(preferred);
+    std::string cpu_reason;  // why a preferred accelerator was not used, for the info card
+    if (!accelerator && preferred != "CPU") cpu_reason = preferred + " unavailable";
+    if (accelerator && preferred == "OpenCL") {
+        cpu_reason = opencl_skip_reason(path_str.c_str());
+        if (!cpu_reason.empty()) accelerator = nullptr;
+    }
+    ChatHandle * handle = load_chat_handle(path_str, n_ctx, accelerator);
+    if (!handle && accelerator) {
+        LOGE("Loading on %s failed; retrying on CPU", ggml_backend_dev_name(accelerator));
+        handle = load_chat_handle(path_str, n_ctx, nullptr);
+        cpu_reason = "GPU load failed";
+    }
+    if (handle && handle->backend == "CPU" && !cpu_reason.empty()) {
+        handle->backend = "CPU: " + cpu_reason;
+    }
     return reinterpret_cast<jlong>(handle);
+}
+
+JNIEXPORT void JNICALL
+Java_com_newoether_agora_api_LlamaChatEngine_nativeSetPreferredBackend(
+    JNIEnv * env, jclass /*clazz*/, jstring name) {
+
+    std::string value;
+    if (!read_java_string(env, name, value) || value.empty()) value = "CPU";
+    std::lock_guard<std::mutex> lock(g_backend_mutex);
+    g_preferred_backend = value;
 }
 
 JNIEXPORT jint JNICALL

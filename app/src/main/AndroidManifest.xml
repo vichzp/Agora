@@ -159,6 +159,10 @@
                 <action android:name="android.app.action.SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED" />
             </intent-filter>
         </receiver>
+        <!-- The Adreno OpenCL driver for the GPU backend; absent on many phones. -->
+        <uses-native-library
+            android:name="libOpenCL.so"
+            android:required="false" />
     </application>
 
 </manifest>
