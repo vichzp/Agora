@@ -185,11 +185,12 @@ inline uint64_t fnv1a(uint64_t hash, const void * data, size_t size) {
     return hash;
 }
 
-// One file per model file, context size and exact prefix tokens.
+// One file per model file, context size, KV cache type and exact prefix tokens.
 inline std::string snapshot_path(
     const std::string & directory,
     const std::string & model_path,
     int32_t n_ctx,
+    const std::string & kv_type,
     const std::vector<llama_token> & tokens,
     size_t count
 ) {
@@ -204,6 +205,7 @@ inline std::string snapshot_path(
     hash = fnv1a(hash, &size, sizeof(size));
     hash = fnv1a(hash, &mtime, sizeof(mtime));
     hash = fnv1a(hash, &n_ctx, sizeof(n_ctx));
+    hash = fnv1a(hash, kv_type.data(), kv_type.size());
     hash = fnv1a(hash, tokens.data(), count * sizeof(llama_token));
     char name[32];
     std::snprintf(name, sizeof(name), "%016llx", static_cast<unsigned long long>(hash));
