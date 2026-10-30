@@ -111,9 +111,17 @@ internal object LocalModelRuntime {
     @Volatile
     private var prefixCacheDirectory: String = ""
 
-    /** Enables persistent prompt-prefix snapshots for chat models loaded from now on. */
-    internal fun setPrefixCacheDirectory(directory: String) {
+    @Volatile
+    private var prefixCacheMaxBytes: Long = 0
+
+    /**
+     * Enables persistent prompt-prefix snapshots for chat models loaded from now on. The
+     * directory belongs under the app cache so Android's Clear cache and low-storage cleanup
+     * remove it; [maxBytes] keeps it inside the app's cache quota.
+     */
+    internal fun setPrefixCacheDirectory(directory: String, maxBytes: Long) {
         prefixCacheDirectory = directory
+        prefixCacheMaxBytes = maxBytes
     }
 
     internal fun initialize(nativeLibraryDir: String) {
@@ -147,7 +155,9 @@ internal object LocalModelRuntime {
             current.engine
         } else {
             unloadResident()
-            val loaded = LlamaChatEngine(identity.canonicalPath, identity.nCtx, prefixCacheDirectory)
+            val loaded = LlamaChatEngine(
+                identity.canonicalPath, identity.nCtx, prefixCacheDirectory, prefixCacheMaxBytes
+            )
             if (!loaded.load()) {
                 loaded.close()
                 return@run false

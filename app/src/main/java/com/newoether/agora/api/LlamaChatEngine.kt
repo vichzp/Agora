@@ -108,6 +108,8 @@ class LlamaChatEngine(
     val nCtx: Int = 2048,
     /** Where prompt-prefix snapshots are kept; blank disables them. */
     private val prefixCacheDir: String = "",
+    /** Disk budget for those snapshots; 0 keeps the native default. */
+    private val prefixCacheMaxBytes: Long = 0,
 ) : Closeable {
     companion object {
         private const val TAG = "LlamaChatEngine"
@@ -145,7 +147,7 @@ class LlamaChatEngine(
     ): Int
     private external fun nativeChatFreeModel(handle: Long)
     private external fun nativeChatCancel(handle: Long)
-    private external fun nativeChatSetPrefixCacheDir(handle: Long, directory: String)
+    private external fun nativeChatSetPrefixCacheDir(handle: Long, directory: String, maxBytes: Long)
 
     fun isLoaded(): Boolean = nativeHandle != 0L
 
@@ -165,7 +167,7 @@ class LlamaChatEngine(
                 return false
             }
             if (prefixCacheDir.isNotBlank()) {
-                nativeChatSetPrefixCacheDir(nativeHandle, prefixCacheDir)
+                nativeChatSetPrefixCacheDir(nativeHandle, prefixCacheDir, prefixCacheMaxBytes)
             }
             DebugLog.d(TAG, "Model loaded, nCtx=$nCtx")
             return true

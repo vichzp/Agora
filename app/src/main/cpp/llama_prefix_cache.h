@@ -26,7 +26,9 @@ namespace agora::prefix_cache {
 // Below this a snapshot costs more file I/O than the prefill it saves.
 constexpr size_t MIN_PREFIX_TOKENS = 64;
 constexpr size_t MAX_SNAPSHOT_FILES = 4;
-constexpr uint64_t MAX_SNAPSHOT_BYTES = 2ull * 1024 * 1024 * 1024;
+// Upper bound when the app passes no budget; the app derives its own from Android's
+// cache quota (StorageManager.getCacheQuotaBytes).
+constexpr uint64_t DEFAULT_MAX_SNAPSHOT_BYTES = 1ull * 1024 * 1024 * 1024;
 constexpr const char * SNAPSHOT_SUFFIX = ".kv";
 // States up to this size also stay in RAM; transformer KV caches are usually far larger.
 constexpr size_t MAX_MEMORY_CHECKPOINT_BYTES = 64ull * 1024 * 1024;
@@ -210,7 +212,7 @@ inline bool restore(
     return true;
 }
 
-inline void evict(const std::string & directory) {
+inline void evict(const std::string & directory, uint64_t max_bytes) {
     struct Entry { std::string path; time_t mtime; uint64_t size; };
     std::vector<Entry> entries;
     DIR * dir = opendir(directory.c_str());
@@ -231,7 +233,7 @@ inline void evict(const std::string & directory) {
     uint64_t total = 0;
     for (size_t i = 0; i < entries.size(); ++i) {
         total += entries[i].size;
-        if (i >= MAX_SNAPSHOT_FILES || (i > 0 && total > MAX_SNAPSHOT_BYTES)) {
+        if (i >= MAX_SNAPSHOT_FILES || total > max_bytes) {
             std::remove(entries[i].path.c_str());
         }
     }
@@ -241,11 +243,14 @@ inline void evict(const std::string & directory) {
 inline bool save(
     llama_context * ctx,
     const std::string & directory,
+    uint64_t max_bytes,
     const std::string & path,
     const std::vector<llama_token> & tokens,
     size_t count
 ) {
     if (path.empty()) return false;
+    // A snapshot larger than the whole budget would only be evicted again.
+    if (llama_state_seq_get_size(ctx, 0) > max_bytes) return false;
     mkdir(directory.c_str(), 0700);
     const std::string temporary = path + ".tmp";
     const size_t written = llama_state_seq_save_file(
@@ -255,7 +260,7 @@ inline bool save(
         std::remove(temporary.c_str());
         return false;
     }
-    evict(directory);
+    evict(directory, max_bytes);
     return true;
 }
 

@@ -58,6 +58,7 @@ struct ChatHandle {
     uint64_t next_parser_id = 0;
     static constexpr size_t MAX_CACHED_PARSERS = 8;
     std::string prefix_cache_dir;  // empty disables prefix snapshots
+    uint64_t prefix_cache_max_bytes = agora::prefix_cache::DEFAULT_MAX_SNAPSHOT_BYTES;
     agora::prefix_cache::MemoryPrefix memory_prefix;
 
     std::string store_parser(
@@ -1131,7 +1132,8 @@ Java_com_newoether_agora_api_LlamaChatEngine_nativeChatGenerate(
             save_prefix = false;
             agora::prefix_cache::remember(handle->ctx, handle->memory_prefix, tokens, prefix_tokens);
             if (agora::prefix_cache::save(
-                    handle->ctx, handle->prefix_cache_dir, prefix_snapshot, tokens, prefix_tokens
+                    handle->ctx, handle->prefix_cache_dir, handle->prefix_cache_max_bytes,
+                    prefix_snapshot, tokens, prefix_tokens
                 )) {
                 LOGD("Saved prompt prefix snapshot: %zu tokens", prefix_tokens);
             }
@@ -1661,13 +1663,16 @@ Java_com_newoether_agora_api_LlamaChatEngine_nativeChatCancel(
 
 JNIEXPORT void JNICALL
 Java_com_newoether_agora_api_LlamaChatEngine_nativeChatSetPrefixCacheDir(
-    JNIEnv * env, jclass /*clazz*/, jlong handle_ptr, jstring directory) {
+    JNIEnv * env, jclass /*clazz*/, jlong handle_ptr, jstring directory, jlong max_bytes) {
 
     if (!handle_ptr) return;
     ChatHandle * handle = reinterpret_cast<ChatHandle *>(handle_ptr);
     std::string path;
     if (!read_java_string(env, directory, path)) return;
     handle->prefix_cache_dir = path;
+    if (max_bytes > 0) handle->prefix_cache_max_bytes = static_cast<uint64_t>(max_bytes);
+    // Apply a lowered budget right away, not only after the next save.
+    agora::prefix_cache::evict(path, handle->prefix_cache_max_bytes);
 }
 
 } // extern "C"

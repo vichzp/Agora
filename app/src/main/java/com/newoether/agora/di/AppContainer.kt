@@ -55,7 +55,8 @@ class AppContainer(
     init {
         LocalModelRuntime.initialize(application.applicationInfo.nativeLibraryDir)
         LocalModelRuntime.setPrefixCacheDirectory(
-            java.io.File(application.cacheDir, "llama-prefix").absolutePath
+            java.io.File(application.cacheDir, "llama-prefix").absolutePath,
+            prefixCacheBudgetBytes(application),
         )
     }
 
@@ -287,4 +288,17 @@ class AppContainer(
             automationExecutionGate, conversationStateRegistry, shellConfirmationController,
             mcpRegistry, mcpToolProvider, taskExecutionEngine,
         )
+}
+
+/**
+ * Half of Android's cache quota for this app, so prompt snapshots leave room for its other
+ * caches, and never more than 1 GiB. Android clears the cache first above its quota.
+ */
+private fun prefixCacheBudgetBytes(application: Application): Long {
+    val ceiling = 1L shl 30
+    val quota = runCatching {
+        val storage = application.getSystemService(android.os.storage.StorageManager::class.java)
+        storage.getCacheQuotaBytes(storage.getUuidForPath(application.cacheDir))
+    }.getOrNull() ?: return 256L shl 20
+    return (quota / 2).coerceIn(64L shl 20, ceiling)
 }
