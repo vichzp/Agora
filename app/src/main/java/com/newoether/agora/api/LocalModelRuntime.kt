@@ -108,6 +108,14 @@ internal object LocalModelRuntime {
     @Volatile
     private var activeChatEngine: LlamaChatEngine? = null
 
+    @Volatile
+    private var prefixCacheDirectory: String = ""
+
+    /** Enables persistent prompt-prefix snapshots for chat models loaded from now on. */
+    internal fun setPrefixCacheDirectory(directory: String) {
+        prefixCacheDirectory = directory
+    }
+
     internal fun initialize(nativeLibraryDir: String) {
         require(nativeLibraryDir.isNotBlank()) { "Native library directory must not be blank" }
         val canonicalDirectory = canonicalize(nativeLibraryDir)
@@ -139,7 +147,7 @@ internal object LocalModelRuntime {
             current.engine
         } else {
             unloadResident()
-            val loaded = LlamaChatEngine(identity.canonicalPath, identity.nCtx)
+            val loaded = LlamaChatEngine(identity.canonicalPath, identity.nCtx, prefixCacheDirectory)
             if (!loaded.load()) {
                 loaded.close()
                 return@run false

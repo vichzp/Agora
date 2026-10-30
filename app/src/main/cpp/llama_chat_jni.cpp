@@ -19,6 +19,7 @@
 #include "nlohmann/json.hpp"
 #include "mtmd.h"
 #include "mtmd-helper.h"
+#include "llama_prefix_cache.h"
 
 #define LOG_TAG "LlamaChatEngine"
 #ifndef NDEBUG
@@ -46,26 +47,44 @@ struct ChatHandle {
 
     // llama.cpp's PEG parser arena can no longer be serialized, so a template result carries
     // a key into this cache instead. Only the few most recent template results stay parseable.
+    // The key also carries the template's conversation-independent prefix to the generation.
+    struct CachedTemplate {
+        std::shared_ptr<const common_peg_arena> parser;
+        std::string static_prefix;
+    };
     std::mutex parsers_mutex;
-    std::deque<std::pair<std::string, std::shared_ptr<const common_peg_arena>>> parsers;
+    std::deque<std::pair<std::string, CachedTemplate>> parsers;
     uint64_t next_parser_id = 0;
     static constexpr size_t MAX_CACHED_PARSERS = 8;
+    std::string prefix_cache_dir;  // empty disables prefix snapshots
 
-    std::string store_parser(const common_peg_arena & parser) {
-        if (parser.empty()) return {};
+    std::string store_parser(const common_peg_arena & parser, std::string static_prefix = {}) {
+        if (parser.empty() && static_prefix.empty()) return {};
         std::lock_guard<std::mutex> lock(parsers_mutex);
         std::string key = "agora-parser:" + std::to_string(++next_parser_id);
-        parsers.emplace_back(key, std::make_shared<const common_peg_arena>(parser));
+        parsers.emplace_back(key, CachedTemplate{
+            parser.empty() ? nullptr : std::make_shared<const common_peg_arena>(parser),
+            std::move(static_prefix),
+        });
         while (parsers.size() > MAX_CACHED_PARSERS) parsers.pop_front();
         return key;
     }
 
-    std::shared_ptr<const common_peg_arena> find_parser(const std::string & key) {
+    // Copies under the lock: a later template result may evict the entry.
+    bool find_template(const std::string & key, CachedTemplate & result) {
         std::lock_guard<std::mutex> lock(parsers_mutex);
         for (const auto & entry : parsers) {
-            if (entry.first == key) return entry.second;
+            if (entry.first == key) {
+                result = entry.second;
+                return true;
+            }
         }
-        return nullptr;
+        return false;
+    }
+
+    std::string find_static_prefix(const std::string & key) {
+        CachedTemplate cached;
+        return find_template(key, cached) ? cached.static_prefix : std::string();
     }
 };
 
@@ -366,7 +385,8 @@ static jobject make_template_result(
     JNIEnv * env,
     ChatHandle & handle,
     const common_chat_params & params,
-    bool supports_tools
+    bool supports_tools,
+    std::string static_prefix = {}
 ) {
     jclass trigger_class = env->FindClass(
         "com/newoether/agora/api/ChatTemplateGrammarTrigger"
@@ -419,7 +439,7 @@ static jobject make_template_result(
     jstring generation_prompt = utf8_to_jstring(
         env, params.generation_prompt.data(), params.generation_prompt.size()
     );
-    const std::string parser_key = handle.store_parser(params.parser);
+    const std::string parser_key = handle.store_parser(params.parser, std::move(static_prefix));
     jstring parser = utf8_to_jstring(env, parser_key.data(), parser_key.size());
     jobject result = env->NewObject(
         result_class, result_ctor,
@@ -541,12 +561,12 @@ struct NativeChatParser {
             }
             return;
         }
-        const auto parser = handle.find_parser(metadata.parser);
-        if (!parser) {
+        ChatHandle::CachedTemplate cached;
+        if (!handle.find_template(metadata.parser, cached)) {
             initialization_error = "Chat template parser has expired; apply the template again";
             return;
         }
-        params.parser = *parser;
+        if (cached.parser) params.parser = *cached.parser;
     }
 
     bool update(
@@ -935,7 +955,15 @@ Java_com_newoether_agora_api_LlamaChatEngine_nativeChatApplyTemplate(
         const common_chat_params params = common_chat_templates_apply(
             handle->chat_templates.get(), inputs
         );
-        return make_template_result(env, *handle, params, supports_tools);
+        std::string static_prefix;
+        if (!handle->prefix_cache_dir.empty()) {
+            static_prefix = agora::prefix_cache::static_prefix(
+                handle->chat_templates.get(), inputs, params.prompt.str()
+            );
+        }
+        return make_template_result(
+            env, *handle, params, supports_tools, std::move(static_prefix)
+        );
     } catch (const std::exception &) {
         LOGE("Failed to apply model chat template");
         return nullptr;
@@ -1013,17 +1041,52 @@ Java_com_newoether_agora_api_LlamaChatEngine_nativeChatGenerate(
         return report_error(env, callback, callbacks, message, 0, 0);
     }
 
-    const int32_t cached_tokens = static_cast<int32_t>(prepare_text_cache(handle, tokens));
+    int32_t cached_tokens = static_cast<int32_t>(prepare_text_cache(handle, tokens));
+
+    // Restore or record the conversation-independent prefix (see llama_prefix_cache.h).
+    size_t prefix_tokens = 0;
+    std::string prefix_snapshot;
+    bool save_prefix = false;
+    if (!handle->prefix_cache_dir.empty()) {
+        prefix_tokens = agora::prefix_cache::prefix_token_count(
+            handle->vocab, handle->find_static_prefix(metadata.parser), tokens
+        );
+        if (prefix_tokens > 0) {
+            prefix_snapshot = agora::prefix_cache::snapshot_path(
+                handle->prefix_cache_dir, handle->path, handle->n_ctx, tokens, prefix_tokens
+            );
+        }
+    }
+    if (!prefix_snapshot.empty() && static_cast<size_t>(cached_tokens) < prefix_tokens) {
+        if (agora::prefix_cache::file_exists(prefix_snapshot)) {
+            if (agora::prefix_cache::restore(handle->ctx, prefix_snapshot, tokens, prefix_tokens)) {
+                handle->decoded_tokens.assign(tokens.begin(), tokens.begin() + prefix_tokens);
+                cached_tokens = static_cast<int32_t>(prefix_tokens);
+                LOGD("Restored prompt prefix snapshot: %zu tokens", prefix_tokens);
+            } else {
+                handle->decoded_tokens.clear();
+                cached_tokens = 0;
+                save_prefix = true;
+            }
+        } else {
+            save_prefix = true;
+        }
+    }
+
     const int32_t n_batch = static_cast<int32_t>(llama_n_batch(handle->ctx));
     int32_t input_tokens = cached_tokens;
     const auto prefill_started = std::chrono::steady_clock::now();
-    for (int32_t off = cached_tokens; off < n_tokens; off += n_batch) {
+    for (int32_t off = cached_tokens; off < n_tokens;) {
         if (handle->cancelled.load(std::memory_order_relaxed)) {
             LOGD("Cancelled during prefill at %d/%d tokens", off, n_tokens);
             common_sampler_free(smpl);
             return report_done(env, callback, callbacks, "cancelled", input_tokens, 0);
         }
-        const int32_t chunk = std::min(n_batch, n_tokens - off);
+        // Stop exactly at the prefix boundary once, so the snapshot holds only the prefix.
+        const int32_t segment_end = save_prefix && off < static_cast<int32_t>(prefix_tokens)
+            ? static_cast<int32_t>(prefix_tokens)
+            : n_tokens;
+        const int32_t chunk = std::min(n_batch, segment_end - off);
         llama_batch batch = llama_batch_get_one(tokens.data() + off, chunk);
         const int32_t decode_result = llama_decode(handle->ctx, batch);
         if (decode_result != 0) {
@@ -1046,6 +1109,15 @@ Java_com_newoether_agora_api_LlamaChatEngine_nativeChatGenerate(
             handle->decoded_tokens.end(), tokens.begin() + off, tokens.begin() + off + chunk
         );
         input_tokens += chunk;
+        off += chunk;
+        if (save_prefix && off == static_cast<int32_t>(prefix_tokens)) {
+            save_prefix = false;
+            if (agora::prefix_cache::save(
+                    handle->ctx, handle->prefix_cache_dir, prefix_snapshot, tokens, prefix_tokens
+                )) {
+                LOGD("Saved prompt prefix snapshot: %zu tokens", prefix_tokens);
+            }
+        }
     }
     const auto prefill_finished = std::chrono::steady_clock::now();
     const auto prefill_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -1567,6 +1639,17 @@ Java_com_newoether_agora_api_LlamaChatEngine_nativeChatCancel(
     ChatHandle * handle = reinterpret_cast<ChatHandle *>(handle_ptr);
     handle->cancelled.store(true, std::memory_order_relaxed);
     LOGD("Cancellation requested");
+}
+
+JNIEXPORT void JNICALL
+Java_com_newoether_agora_api_LlamaChatEngine_nativeChatSetPrefixCacheDir(
+    JNIEnv * env, jclass /*clazz*/, jlong handle_ptr, jstring directory) {
+
+    if (!handle_ptr) return;
+    ChatHandle * handle = reinterpret_cast<ChatHandle *>(handle_ptr);
+    std::string path;
+    if (!read_java_string(env, directory, path)) return;
+    handle->prefix_cache_dir = path;
 }
 
 } // extern "C"

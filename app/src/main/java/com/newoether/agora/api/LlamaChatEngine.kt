@@ -105,7 +105,9 @@ class LlamaChatTemplateResult(
 
 class LlamaChatEngine(
     val modelPath: String,
-    val nCtx: Int = 2048
+    val nCtx: Int = 2048,
+    /** Where prompt-prefix snapshots are kept; blank disables them. */
+    private val prefixCacheDir: String = "",
 ) : Closeable {
     companion object {
         private const val TAG = "LlamaChatEngine"
@@ -143,6 +145,7 @@ class LlamaChatEngine(
     ): Int
     private external fun nativeChatFreeModel(handle: Long)
     private external fun nativeChatCancel(handle: Long)
+    private external fun nativeChatSetPrefixCacheDir(handle: Long, directory: String)
 
     fun isLoaded(): Boolean = nativeHandle != 0L
 
@@ -160,6 +163,9 @@ class LlamaChatEngine(
             if (nativeHandle == 0L) {
                 DebugLog.e(TAG, "Failed to load model")
                 return false
+            }
+            if (prefixCacheDir.isNotBlank()) {
+                nativeChatSetPrefixCacheDir(nativeHandle, prefixCacheDir)
             }
             DebugLog.d(TAG, "Model loaded, nCtx=$nCtx")
             return true

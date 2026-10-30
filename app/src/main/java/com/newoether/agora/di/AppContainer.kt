@@ -54,6 +54,9 @@ class AppContainer(
 
     init {
         LocalModelRuntime.initialize(application.applicationInfo.nativeLibraryDir)
+        LocalModelRuntime.setPrefixCacheDirectory(
+            java.io.File(application.cacheDir, "llama-prefix").absolutePath
+        )
     }
 
     /** App-lifetime scope that backs the shared settings StateFlows.
