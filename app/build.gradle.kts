@@ -36,8 +36,11 @@ android {
         applicationId = "com.newoether.agora"
         minSdk = 26
         targetSdk = 36
-        versionCode = 35
+        versionCode = 46
         versionName = "2.3.2"
+        // VxNet fork: installs beside upstream Agora under its own package and key
+        applicationIdSuffix = ".vx"
+        versionNameSuffix = "-vx1"
 
 
         ndk {
@@ -120,6 +123,8 @@ android {
     packaging {
         jniLibs {
             useLegacyPackaging = true
+            // Link-time stand-in for the phone's OpenCL driver; the vendor library is used instead.
+            excludes += "**/libOpenCL.so"
         }
         resources {
             // bcprov, bcutil and bcpkix each ship the same BouncyCastle (MIT) license text.

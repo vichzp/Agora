@@ -69,7 +69,8 @@ PromptCachePlan restore_prompt_cache(
     );
     if (plan.prefix_tokens > 0) {
         plan.prefix_snapshot = cache::snapshot_path(
-            handle->prefix_cache_dir, handle->path, handle->n_ctx, prompt_tokens, plan.prefix_tokens
+            handle->prefix_cache_dir, handle->path, handle->n_ctx, handle->kv_type, prompt_tokens,
+            plan.prefix_tokens
         );
         if (plan.prefix_snapshot.empty()) {
             LOGE("Prompt prefix cache disabled: cannot stat model path '%s'", handle->path.c_str());
