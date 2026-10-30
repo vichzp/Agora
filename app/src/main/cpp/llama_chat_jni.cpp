@@ -781,6 +781,7 @@ Java_com_newoether_agora_api_LlamaChatEngine_nativeChatLoadModel(
     llama_model_params model_params = llama_model_default_params();
     const auto model_started = std::chrono::steady_clock::now();
     handle->model = llama_model_load_from_file(path_str, model_params);
+    handle->path = path_str;  // keys the prompt-prefix snapshots
     const auto model_finished = std::chrono::steady_clock::now();
     env->ReleaseStringUTFChars(path, path_str);
 
@@ -1083,6 +1084,9 @@ Java_com_newoether_agora_api_LlamaChatEngine_nativeChatGenerate(
             prefix_snapshot = agora::prefix_cache::snapshot_path(
                 handle->prefix_cache_dir, handle->path, handle->n_ctx, tokens, prefix_tokens
             );
+            if (prefix_snapshot.empty()) {
+                LOGE("Prompt prefix cache disabled: cannot stat model path '%s'", handle->path.c_str());
+            }
         }
     }
     // Hybrid models cannot trim back to the shared history, so resume from the last turn's
