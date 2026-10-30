@@ -556,12 +556,14 @@ static bool read_template_metadata(
 struct NativeChatParser {
     common_chat_parser_params params;
     common_chat_msg message;
-    std::string generated_text;
+    // Generated pieces with their token ids, as llama-server feeds its parser: the PEG parser
+    // matches special tokens such as <think> by id.
+    common_chat_input generated;
     std::string initialization_error;
 
     NativeChatParser(const TemplateSamplingMetadata & metadata, ChatHandle & handle) {
         params.format = metadata.format;
-        params.generation_prompt = common_chat_input(metadata.generation_prompt);
+        params.generation_prompt = common_chat_input_tokenize(handle.vocab, metadata.generation_prompt);
         if (metadata.parser.empty()) {
             if (metadata.format != COMMON_CHAT_FORMAT_CONTENT_ONLY) {
                 initialization_error = "Chat template parser metadata is missing";
@@ -574,6 +576,10 @@ struct NativeChatParser {
             return;
         }
         if (cached.parser) params.parser = *cached.parser;
+    }
+
+    void add_token(const std::string & piece, llama_token token) {
+        generated.append(piece, token);
     }
 
     bool update(
@@ -589,11 +595,10 @@ struct NativeChatParser {
             error = initialization_error;
             return false;
         }
-        generated_text.append(data, length);
+        (void) data;
+        (void) length;  // the text arrives token by token through add_token
         try {
-            common_chat_msg next = common_chat_parse(
-                common_chat_input(generated_text), is_partial, params
-            );
+            common_chat_msg next = common_chat_parse(generated, is_partial, params);
             if (next.empty()) {
                 if (!is_partial) message = {};
                 return true;
@@ -880,6 +885,8 @@ Java_com_newoether_agora_api_LlamaChatEngine_nativeChatApplyTemplate(
     inputs.tool_choice = COMMON_CHAT_TOOL_CHOICE_AUTO;
     inputs.parallel_tool_calls = true;
     inputs.use_jinja = true;
+    // Separate reasoning from the answer; with NONE the think tags stay in the content.
+    inputs.reasoning_format = COMMON_REASONING_FORMAT_DEEPSEEK;
     bool has_tool_history = false;
 
     for (jint i = 0; i < message_count; ++i) {
@@ -1206,6 +1213,7 @@ Java_com_newoether_agora_api_LlamaChatEngine_nativeChatGenerate(
         }
         handle->decoded_tokens.push_back(new_token_id);
         generated++;
+        parser.add_token(piece, new_token_id);
 
         utf8_pending.append(piece);
         const size_t complete_len = utf8_complete_prefix_len(utf8_pending);
@@ -1556,6 +1564,7 @@ Java_com_newoether_agora_api_LlamaChatEngine_nativeChatGenerateWithImages(
             break;
         }
         generated++;
+        parser.add_token(piece, new_token_id);
 
         utf8_pending.append(piece);
         const size_t complete_len = utf8_complete_prefix_len(utf8_pending);
