@@ -199,7 +199,7 @@ class LocalLlamaOwnershipSourceContractTest {
 
         assertTrue(native.contains("params.format = metadata.format"))
         assertTrue(native.contains("params.generation_prompt = common_chat_input(metadata.generation_prompt)"))
-        assertTrue(native.contains("handle.find_parser(metadata.parser)"))
+        assertTrue(native.contains("handle.find_template(metadata.parser, cached)"))
         assertTrue(parser.contains("common_chat_input(generated_text), is_partial, params"))
         assertTrue(parser.contains("common_chat_msg_diff::compute_diffs(message, next)"))
         assertTrue(parser.contains("message.tool_calls[diff.tool_call_index]"))
@@ -268,7 +268,7 @@ class LocalLlamaOwnershipSourceContractTest {
         val runtime = mainSource("com/newoether/agora/api/LocalModelRuntime.kt")
         val embeddingNative = mainCppSource("llama_jni.cpp")
         val chatSwitch = runtime.indexOf("unloadResident()")
-        val chatLoad = runtime.indexOf("LlamaChatEngine(identity.canonicalPath, identity.nCtx)")
+        val chatLoad = runtime.indexOf("LlamaChatEngine(identity.canonicalPath, identity.nCtx, prefixCacheDirectory)")
         val chatFailure = runtime.indexOf("if (!loaded.load())", chatLoad)
         val chatInstall = runtime.indexOf("resident = Resident.Chat", chatFailure)
         val embeddingSwitch = runtime.indexOf("unloadResident()", chatSwitch + 1)
