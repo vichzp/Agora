@@ -58,6 +58,8 @@ class AppContainer(
             java.io.File(application.cacheDir, "llama-prefix").absolutePath,
             prefixCacheBudgetBytes(application),
         )
+        LocalModelRuntime.setMemoryCheckpointBudget(memoryCheckpointBudget(application))
+        application.registerComponentCallbacks(PromptCheckpointTrimCallbacks)
     }
 
     /** App-lifetime scope that backs the shared settings StateFlows.
@@ -303,4 +305,44 @@ private fun prefixCacheBudgetBytes(application: Application): Long {
         storage.getCacheQuotaBytes(storage.getUuidForPath(application.cacheDir))
     }.getOrNull() ?: return floor
     return quota.coerceIn(floor, ceiling)
+}
+
+/**
+ * RAM for prompt checkpoints, scaled to the device: 1/16 of total RAM between 192 MiB and
+ * 1 GiB, one checkpoint up to 3/4 of that. Low-RAM devices keep the native defaults' floor.
+ */
+private fun memoryCheckpointBudget(application: Application): com.newoether.agora.api.MemoryCheckpointBudget {
+    val activityManager = application.getSystemService(android.app.ActivityManager::class.java)
+    val info = android.app.ActivityManager.MemoryInfo()
+    val totalRam = runCatching { activityManager.getMemoryInfo(info); info.totalMem }.getOrDefault(0L)
+    val floor = 192L shl 20
+    val total = if (activityManager?.isLowRamDevice == true) {
+        floor
+    } else {
+        (totalRam / 16).coerceIn(floor, 1L shl 30)
+    }
+    return com.newoether.agora.api.MemoryCheckpointBudget(
+        perCheckpointBytes = total * 3 / 4,
+        totalBytes = total,
+    )
+}
+
+/** Gives the RAM prompt checkpoints back when Android asks; the disk snapshots stay. */
+private object PromptCheckpointTrimCallbacks : android.content.ComponentCallbacks2 {
+    @Suppress("DEPRECATION")
+    override fun onTrimMemory(level: Int) {
+        // Not on BACKGROUND: returning to the chat should still find its turn checkpoint.
+        if (level >= android.content.ComponentCallbacks2.TRIM_MEMORY_MODERATE ||
+            level == android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL
+        ) {
+            com.newoether.agora.api.LocalModelRuntime.dropMemoryCheckpoints()
+        }
+    }
+
+    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) = Unit
+
+    @Deprecated("Deprecated in Java")
+    override fun onLowMemory() {
+        com.newoether.agora.api.LocalModelRuntime.dropMemoryCheckpoints()
+    }
 }

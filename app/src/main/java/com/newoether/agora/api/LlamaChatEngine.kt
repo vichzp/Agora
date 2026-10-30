@@ -103,6 +103,9 @@ class LlamaChatTemplateResult(
     val parser: String = "",
 )
 
+/** RAM limits for prompt checkpoints, scaled to the device by the caller. */
+data class MemoryCheckpointBudget(val perCheckpointBytes: Long, val totalBytes: Long)
+
 class LlamaChatEngine(
     val modelPath: String,
     val nCtx: Int = 2048,
@@ -110,6 +113,8 @@ class LlamaChatEngine(
     private val prefixCacheDir: String = "",
     /** Disk budget for those snapshots; 0 keeps the native default. */
     private val prefixCacheMaxBytes: Long = 0,
+    /** RAM budget for prompt checkpoints; null keeps the native defaults. */
+    private val memoryCheckpointBudget: MemoryCheckpointBudget? = null,
 ) : Closeable {
     companion object {
         private const val TAG = "LlamaChatEngine"
@@ -148,6 +153,8 @@ class LlamaChatEngine(
     private external fun nativeChatFreeModel(handle: Long)
     private external fun nativeChatCancel(handle: Long)
     private external fun nativeChatSetPrefixCacheDir(handle: Long, directory: String, maxBytes: Long)
+    private external fun nativeChatSetMemoryCheckpointBudget(handle: Long, perCheckpoint: Long, total: Long)
+    private external fun nativeChatDropMemoryCheckpoints(handle: Long)
 
     fun isLoaded(): Boolean = nativeHandle != 0L
 
@@ -168,6 +175,9 @@ class LlamaChatEngine(
             }
             if (prefixCacheDir.isNotBlank()) {
                 nativeChatSetPrefixCacheDir(nativeHandle, prefixCacheDir, prefixCacheMaxBytes)
+            }
+            memoryCheckpointBudget?.let {
+                nativeChatSetMemoryCheckpointBudget(nativeHandle, it.perCheckpointBytes, it.totalBytes)
             }
             DebugLog.d(TAG, "Model loaded, nCtx=$nCtx")
             return true
@@ -353,6 +363,20 @@ class LlamaChatEngine(
             return nativeHandle != 0L && nativeChatHasMmproj(nativeHandle)
         } finally {
             lock.readLock().unlock()
+        }
+    }
+
+    /**
+     * Frees the RAM prompt checkpoints (disk snapshots stay). Skips when a generation holds the
+     * engine, so callers on the main thread never wait.
+     */
+    fun dropMemoryCheckpoints(): Boolean {
+        if (!lock.writeLock().tryLock()) return false
+        try {
+            if (nativeHandle != 0L) nativeChatDropMemoryCheckpoints(nativeHandle)
+            return true
+        } finally {
+            lock.writeLock().unlock()
         }
     }
 

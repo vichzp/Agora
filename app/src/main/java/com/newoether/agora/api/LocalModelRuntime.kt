@@ -95,6 +95,7 @@ internal object LocalModelRuntime {
         onTaskArrived = ::cancelIdleDeadline,
         onQueueIdle = ::startIdleDeadline,
     )
+    @Volatile
     private var resident: Resident? = null
     private var idleScope: CoroutineScope? = null
     private var idleBindingJob: Job? = null
@@ -113,6 +114,19 @@ internal object LocalModelRuntime {
 
     @Volatile
     private var prefixCacheMaxBytes: Long = 0
+
+    @Volatile
+    private var memoryCheckpointBudget: MemoryCheckpointBudget? = null
+
+    /** RAM limits for prompt checkpoints in chat models loaded from now on. */
+    internal fun setMemoryCheckpointBudget(budget: MemoryCheckpointBudget) {
+        memoryCheckpointBudget = budget
+    }
+
+    /** Frees the resident chat model's RAM prompt checkpoints, e.g. on onTrimMemory. */
+    internal fun dropMemoryCheckpoints() {
+        (resident as? Resident.Chat)?.engine?.dropMemoryCheckpoints()
+    }
 
     /**
      * Enables persistent prompt-prefix snapshots for chat models loaded from now on. The
@@ -156,7 +170,8 @@ internal object LocalModelRuntime {
         } else {
             unloadResident()
             val loaded = LlamaChatEngine(
-                identity.canonicalPath, identity.nCtx, prefixCacheDirectory, prefixCacheMaxBytes
+                identity.canonicalPath, identity.nCtx, prefixCacheDirectory, prefixCacheMaxBytes,
+                memoryCheckpointBudget,
             )
             if (!loaded.load()) {
                 loaded.close()

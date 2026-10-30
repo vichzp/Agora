@@ -30,11 +30,13 @@ constexpr size_t MAX_SNAPSHOT_FILES = 4;
 // cache quota (StorageManager.getCacheQuotaBytes).
 constexpr uint64_t DEFAULT_MAX_SNAPSHOT_BYTES = 1ull * 1024 * 1024 * 1024;
 constexpr const char * SNAPSHOT_SUFFIX = ".kv";
-// States up to this size also stay in RAM (LFM3-VL-2B: about 74 MB at 6k tokens);
-// transformer KV caches are usually far larger and rely on trimming instead.
-constexpr size_t MAX_MEMORY_CHECKPOINT_BYTES = 192ull * 1024 * 1024;
+// Defaults for RAM checkpoints when the app passes no budget; the app scales them with the
+// device's RAM. A state larger than one checkpoint's budget is not kept in RAM (LFM3-VL-2B:
+// about 74 MB at 6k tokens; transformer KV caches are usually far larger and rely on
+// trimming instead).
+constexpr size_t DEFAULT_MEMORY_CHECKPOINT_BYTES = 192ull * 1024 * 1024;
 // RAM shared by the prefix and turn checkpoints together.
-constexpr size_t MAX_MEMORY_TOTAL_BYTES = 320ull * 1024 * 1024;
+constexpr size_t DEFAULT_MEMORY_TOTAL_BYTES = 320ull * 1024 * 1024;
 
 inline size_t common_prefix_length(const std::string & a, const std::string & b) {
     const size_t limit = std::min(a.size(), b.size());
@@ -160,12 +162,12 @@ inline void remember(
     llama_context * ctx,
     MemoryPrefix & cached,
     const std::vector<llama_token> & tokens,
-    size_t count
+    size_t count,
+    size_t max_bytes
 ) {
     cached.checkpoint.clear();
     cached.tokens.clear();
-    if (llama_state_seq_get_size_ext(ctx, 0, LLAMA_STATE_SEQ_FLAGS_NONE) >
-        MAX_MEMORY_CHECKPOINT_BYTES) return;
+    if (llama_state_seq_get_size_ext(ctx, 0, LLAMA_STATE_SEQ_FLAGS_NONE) > max_bytes) return;
     llama_memory_t memory = llama_get_memory(ctx);
     cached.checkpoint.update_pos(static_cast<int64_t>(count),
                                  llama_memory_seq_pos_min(memory, 0),

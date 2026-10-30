@@ -64,6 +64,8 @@ struct ChatHandle {
     // between does not evict the conversation's checkpoint.
     std::deque<agora::prefix_cache::MemoryPrefix> memory_turns;
     static constexpr size_t MAX_MEMORY_TURNS = 3;
+    size_t memory_checkpoint_max_bytes = agora::prefix_cache::DEFAULT_MEMORY_CHECKPOINT_BYTES;
+    size_t memory_total_max_bytes = agora::prefix_cache::DEFAULT_MEMORY_TOTAL_BYTES;
 
     std::string store_parser(
         const common_peg_arena & parser,
@@ -1123,7 +1125,8 @@ Java_com_newoether_agora_api_LlamaChatEngine_nativeChatGenerate(
                 handle->decoded_tokens.assign(tokens.begin(), tokens.begin() + prefix_tokens);
                 cached_tokens = static_cast<int32_t>(prefix_tokens);
                 agora::prefix_cache::remember(
-                    handle->ctx, handle->memory_prefix, tokens, prefix_tokens
+                    handle->ctx, handle->memory_prefix, tokens, prefix_tokens,
+                    handle->memory_checkpoint_max_bytes
                 );
                 LOGD("Restored prompt prefix snapshot: %zu tokens", prefix_tokens);
             } else {
@@ -1179,7 +1182,9 @@ Java_com_newoether_agora_api_LlamaChatEngine_nativeChatGenerate(
         off += chunk;
         if (turn_tokens > 0 && off == static_cast<int32_t>(turn_tokens)) {
             agora::prefix_cache::MemoryPrefix turn;
-            agora::prefix_cache::remember(handle->ctx, turn, tokens, turn_tokens);
+            agora::prefix_cache::remember(
+                handle->ctx, turn, tokens, turn_tokens, handle->memory_checkpoint_max_bytes
+            );
             if (!turn.checkpoint.empty()) {
                 handle->memory_turns.push_back(std::move(turn));
                 const auto total_bytes = [&]() {
@@ -1189,14 +1194,17 @@ Java_com_newoether_agora_api_LlamaChatEngine_nativeChatGenerate(
                 };
                 while (handle->memory_turns.size() > ChatHandle::MAX_MEMORY_TURNS ||
                        (handle->memory_turns.size() > 1 &&
-                        total_bytes() > agora::prefix_cache::MAX_MEMORY_TOTAL_BYTES)) {
+                        total_bytes() > handle->memory_total_max_bytes)) {
                     handle->memory_turns.pop_front();
                 }
             }
         }
         if (save_prefix && off == static_cast<int32_t>(prefix_tokens)) {
             save_prefix = false;
-            agora::prefix_cache::remember(handle->ctx, handle->memory_prefix, tokens, prefix_tokens);
+            agora::prefix_cache::remember(
+                handle->ctx, handle->memory_prefix, tokens, prefix_tokens,
+                handle->memory_checkpoint_max_bytes
+            );
             if (agora::prefix_cache::save(
                     handle->ctx, handle->prefix_cache_dir, handle->prefix_cache_max_bytes,
                     prefix_snapshot, tokens, prefix_tokens
@@ -1745,6 +1753,28 @@ Java_com_newoether_agora_api_LlamaChatEngine_nativeChatSetPrefixCacheDir(
     if (max_bytes > 0) handle->prefix_cache_max_bytes = static_cast<uint64_t>(max_bytes);
     // Apply a lowered budget right away, not only after the next save.
     agora::prefix_cache::evict(path, handle->prefix_cache_max_bytes);
+}
+
+JNIEXPORT void JNICALL
+Java_com_newoether_agora_api_LlamaChatEngine_nativeChatSetMemoryCheckpointBudget(
+    JNIEnv * /*env*/, jclass /*clazz*/, jlong handle_ptr, jlong per_checkpoint, jlong total) {
+
+    if (!handle_ptr) return;
+    ChatHandle * handle = reinterpret_cast<ChatHandle *>(handle_ptr);
+    if (per_checkpoint >= 0) handle->memory_checkpoint_max_bytes = static_cast<size_t>(per_checkpoint);
+    if (total >= 0) handle->memory_total_max_bytes = static_cast<size_t>(total);
+}
+
+// Frees the RAM checkpoints; the disk snapshots stay. Called under memory pressure.
+JNIEXPORT void JNICALL
+Java_com_newoether_agora_api_LlamaChatEngine_nativeChatDropMemoryCheckpoints(
+    JNIEnv * /*env*/, jclass /*clazz*/, jlong handle_ptr) {
+
+    if (!handle_ptr) return;
+    ChatHandle * handle = reinterpret_cast<ChatHandle *>(handle_ptr);
+    handle->memory_turns.clear();
+    handle->memory_prefix = {};
+    LOGD("Dropped RAM prompt checkpoints");
 }
 
 } // extern "C"
