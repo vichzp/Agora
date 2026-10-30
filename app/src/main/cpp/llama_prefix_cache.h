@@ -4,9 +4,14 @@
 // definitions, template preamble), so a new chat restores it instead of prefilling it again.
 // Hybrid and recurrent models cannot trim their state back to a shared prefix, so for them
 // this is the only prompt reuse there is.
+//
+// Built from llama.cpp's own pieces: the template's message delimiters find the prefix,
+// common_prompt_checkpoint keeps a small copy in RAM, and llama_state_seq_save_file /
+// load_file hold it on disk. Agora only adds the boundary choice, keying and eviction.
 
 #include "llama.h"
 #include "chat.h"
+#include "common.h"
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
@@ -23,6 +28,8 @@ constexpr size_t MIN_PREFIX_TOKENS = 64;
 constexpr size_t MAX_SNAPSHOT_FILES = 4;
 constexpr uint64_t MAX_SNAPSHOT_BYTES = 2ull * 1024 * 1024 * 1024;
 constexpr const char * SNAPSHOT_SUFFIX = ".kv";
+// States up to this size also stay in RAM; transformer KV caches are usually far larger.
+constexpr size_t MAX_MEMORY_CHECKPOINT_BYTES = 64ull * 1024 * 1024;
 
 inline size_t common_prefix_length(const std::string & a, const std::string & b) {
     const size_t limit = std::min(a.size(), b.size());
@@ -31,10 +38,10 @@ inline size_t common_prefix_length(const std::string & a, const std::string & b)
     return n;
 }
 
-// Renders the leading system messages with two different probe user messages. Whatever both
-// renders share comes before any user content, so it is the same for every conversation that
-// uses these system messages and tools. Returns the part of `prompt` that matches it.
-inline std::string static_prefix(
+// Fallback for templates without message delimiters: renders the leading system messages
+// with two different probe user messages. Whatever both renders share comes before any user
+// content. Returns the part of `prompt` that matches it.
+inline std::string probe_static_prefix(
     const common_chat_templates * templates,
     const common_chat_templates_inputs & inputs,
     const std::string & prompt
@@ -65,26 +72,76 @@ inline std::string static_prefix(
     }
 }
 
-// Number of leading prompt tokens covered by `prefix_text`; 0 when too short to be worth it.
+// Number of leading prompt tokens before the first non-system message; 0 when too short to
+// be worth it. Uses the template's message delimiters, else the probe prefix text.
 inline size_t prefix_token_count(
     const llama_vocab * vocab,
-    const std::string & prefix_text,
+    common_chat_msg_delimiters delimiters,
+    const std::string & fallback_prefix,
     const std::vector<llama_token> & prompt_tokens
 ) {
-    if (prefix_text.empty()) return 0;
-    std::vector<llama_token> prefix(prefix_text.size() + 8);
-    int32_t n = llama_tokenize(vocab, prefix_text.c_str(), prefix_text.size(),
-                               prefix.data(), static_cast<int32_t>(prefix.size()), true, true);
-    if (n <= 0) return 0;
-    prefix.resize(static_cast<size_t>(n));
-    size_t shared = 0;
-    const size_t limit = std::min(prefix.size(), prompt_tokens.size());
-    while (shared < limit && prefix[shared] == prompt_tokens[shared]) shared++;
-    // The last prefix token may merge differently once the conversation follows it.
-    if (shared == prefix.size() && shared > 0) shared--;
+    size_t boundary = 0;
+    if (!delimiters.delimiters.empty()) {
+        delimiters.tokenize(vocab);
+        for (const auto & span : delimiters.split(prompt_tokens).spans) {
+            if (span.valid() && span.role != COMMON_CHAT_ROLE_SYSTEM) {
+                boundary = span.pos;
+                break;
+            }
+        }
+    } else if (!fallback_prefix.empty()) {
+        const std::vector<llama_token> prefix = common_tokenize(vocab, fallback_prefix, true, true);
+        const size_t limit = std::min(prefix.size(), prompt_tokens.size());
+        while (boundary < limit && prefix[boundary] == prompt_tokens[boundary]) boundary++;
+        // The last prefix token may merge differently once the conversation follows it.
+        if (boundary == prefix.size() && boundary > 0) boundary--;
+    }
     // Sampling needs at least one prompt token decoded in this request.
-    if (shared >= prompt_tokens.size()) return 0;
-    return shared >= MIN_PREFIX_TOKENS ? shared : 0;
+    if (boundary >= prompt_tokens.size()) return 0;
+    return boundary >= MIN_PREFIX_TOKENS ? boundary : 0;
+}
+
+// The most recent prefix state, kept in RAM when it is small (hybrid and recurrent models).
+struct MemoryPrefix {
+    std::vector<llama_token> tokens;
+    common_prompt_checkpoint checkpoint;
+};
+
+inline bool restore_memory(
+    llama_context * ctx,
+    const MemoryPrefix & cached,
+    const std::vector<llama_token> & tokens,
+    size_t count
+) {
+    if (cached.checkpoint.empty() || cached.tokens.size() != count ||
+        !std::equal(cached.tokens.begin(), cached.tokens.end(), tokens.begin())) return false;
+    llama_memory_t memory = llama_get_memory(ctx);
+    llama_memory_clear(memory, true);
+    if (!cached.checkpoint.load_tgt(ctx, 0, LLAMA_STATE_SEQ_FLAGS_NONE) ||
+        llama_memory_seq_pos_max(memory, 0) + 1 != static_cast<llama_pos>(count)) {
+        llama_memory_clear(memory, true);
+        return false;
+    }
+    return true;
+}
+
+// Call when sequence 0 holds exactly the first `count` prompt tokens.
+inline void remember(
+    llama_context * ctx,
+    MemoryPrefix & cached,
+    const std::vector<llama_token> & tokens,
+    size_t count
+) {
+    cached.checkpoint.clear();
+    cached.tokens.clear();
+    if (llama_state_seq_get_size_ext(ctx, 0, LLAMA_STATE_SEQ_FLAGS_NONE) >
+        MAX_MEMORY_CHECKPOINT_BYTES) return;
+    llama_memory_t memory = llama_get_memory(ctx);
+    cached.checkpoint.update_pos(static_cast<int64_t>(count),
+                                 llama_memory_seq_pos_min(memory, 0),
+                                 llama_memory_seq_pos_max(memory, 0));
+    cached.checkpoint.update_tgt(ctx, 0, LLAMA_STATE_SEQ_FLAGS_NONE);
+    cached.tokens.assign(tokens.begin(), tokens.begin() + count);
 }
 
 inline uint64_t fnv1a(uint64_t hash, const void * data, size_t size) {

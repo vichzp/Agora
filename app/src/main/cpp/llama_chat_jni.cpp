@@ -50,21 +50,28 @@ struct ChatHandle {
     // The key also carries the template's conversation-independent prefix to the generation.
     struct CachedTemplate {
         std::shared_ptr<const common_peg_arena> parser;
-        std::string static_prefix;
+        common_chat_msg_delimiters delimiters;
+        std::string fallback_prefix;  // only for templates without message delimiters
     };
     std::mutex parsers_mutex;
     std::deque<std::pair<std::string, CachedTemplate>> parsers;
     uint64_t next_parser_id = 0;
     static constexpr size_t MAX_CACHED_PARSERS = 8;
     std::string prefix_cache_dir;  // empty disables prefix snapshots
+    agora::prefix_cache::MemoryPrefix memory_prefix;
 
-    std::string store_parser(const common_peg_arena & parser, std::string static_prefix = {}) {
-        if (parser.empty() && static_prefix.empty()) return {};
+    std::string store_parser(
+        const common_peg_arena & parser,
+        const common_chat_msg_delimiters & delimiters = {},
+        std::string fallback_prefix = {}
+    ) {
+        if (parser.empty() && delimiters.delimiters.empty() && fallback_prefix.empty()) return {};
         std::lock_guard<std::mutex> lock(parsers_mutex);
         std::string key = "agora-parser:" + std::to_string(++next_parser_id);
         parsers.emplace_back(key, CachedTemplate{
             parser.empty() ? nullptr : std::make_shared<const common_peg_arena>(parser),
-            std::move(static_prefix),
+            delimiters,
+            std::move(fallback_prefix),
         });
         while (parsers.size() > MAX_CACHED_PARSERS) parsers.pop_front();
         return key;
@@ -82,10 +89,7 @@ struct ChatHandle {
         return false;
     }
 
-    std::string find_static_prefix(const std::string & key) {
-        CachedTemplate cached;
-        return find_template(key, cached) ? cached.static_prefix : std::string();
-    }
+
 };
 
 static bool abort_callback(void * data) {
@@ -386,7 +390,7 @@ static jobject make_template_result(
     ChatHandle & handle,
     const common_chat_params & params,
     bool supports_tools,
-    std::string static_prefix = {}
+    std::string fallback_prefix = {}
 ) {
     jclass trigger_class = env->FindClass(
         "com/newoether/agora/api/ChatTemplateGrammarTrigger"
@@ -439,7 +443,9 @@ static jobject make_template_result(
     jstring generation_prompt = utf8_to_jstring(
         env, params.generation_prompt.data(), params.generation_prompt.size()
     );
-    const std::string parser_key = handle.store_parser(params.parser, std::move(static_prefix));
+    const std::string parser_key = handle.prefix_cache_dir.empty()
+        ? handle.store_parser(params.parser)
+        : handle.store_parser(params.parser, params.message_delimiters, std::move(fallback_prefix));
     jstring parser = utf8_to_jstring(env, parser_key.data(), parser_key.size());
     jobject result = env->NewObject(
         result_class, result_ctor,
@@ -955,14 +961,14 @@ Java_com_newoether_agora_api_LlamaChatEngine_nativeChatApplyTemplate(
         const common_chat_params params = common_chat_templates_apply(
             handle->chat_templates.get(), inputs
         );
-        std::string static_prefix;
-        if (!handle->prefix_cache_dir.empty()) {
-            static_prefix = agora::prefix_cache::static_prefix(
+        std::string fallback_prefix;
+        if (!handle->prefix_cache_dir.empty() && params.message_delimiters.delimiters.empty()) {
+            fallback_prefix = agora::prefix_cache::probe_static_prefix(
                 handle->chat_templates.get(), inputs, params.prompt.str()
             );
         }
         return make_template_result(
-            env, *handle, params, supports_tools, std::move(static_prefix)
+            env, *handle, params, supports_tools, std::move(fallback_prefix)
         );
     } catch (const std::exception &) {
         LOGE("Failed to apply model chat template");
@@ -1047,9 +1053,11 @@ Java_com_newoether_agora_api_LlamaChatEngine_nativeChatGenerate(
     size_t prefix_tokens = 0;
     std::string prefix_snapshot;
     bool save_prefix = false;
-    if (!handle->prefix_cache_dir.empty()) {
+    ChatHandle::CachedTemplate prefix_template;
+    if (!handle->prefix_cache_dir.empty() &&
+        handle->find_template(metadata.parser, prefix_template)) {
         prefix_tokens = agora::prefix_cache::prefix_token_count(
-            handle->vocab, handle->find_static_prefix(metadata.parser), tokens
+            handle->vocab, prefix_template.delimiters, prefix_template.fallback_prefix, tokens
         );
         if (prefix_tokens > 0) {
             prefix_snapshot = agora::prefix_cache::snapshot_path(
@@ -1058,10 +1066,19 @@ Java_com_newoether_agora_api_LlamaChatEngine_nativeChatGenerate(
         }
     }
     if (!prefix_snapshot.empty() && static_cast<size_t>(cached_tokens) < prefix_tokens) {
-        if (agora::prefix_cache::file_exists(prefix_snapshot)) {
+        if (agora::prefix_cache::restore_memory(
+                handle->ctx, handle->memory_prefix, tokens, prefix_tokens
+            )) {
+            handle->decoded_tokens.assign(tokens.begin(), tokens.begin() + prefix_tokens);
+            cached_tokens = static_cast<int32_t>(prefix_tokens);
+            LOGD("Restored prompt prefix from memory: %zu tokens", prefix_tokens);
+        } else if (agora::prefix_cache::file_exists(prefix_snapshot)) {
             if (agora::prefix_cache::restore(handle->ctx, prefix_snapshot, tokens, prefix_tokens)) {
                 handle->decoded_tokens.assign(tokens.begin(), tokens.begin() + prefix_tokens);
                 cached_tokens = static_cast<int32_t>(prefix_tokens);
+                agora::prefix_cache::remember(
+                    handle->ctx, handle->memory_prefix, tokens, prefix_tokens
+                );
                 LOGD("Restored prompt prefix snapshot: %zu tokens", prefix_tokens);
             } else {
                 handle->decoded_tokens.clear();
@@ -1112,6 +1129,7 @@ Java_com_newoether_agora_api_LlamaChatEngine_nativeChatGenerate(
         off += chunk;
         if (save_prefix && off == static_cast<int32_t>(prefix_tokens)) {
             save_prefix = false;
+            agora::prefix_cache::remember(handle->ctx, handle->memory_prefix, tokens, prefix_tokens);
             if (agora::prefix_cache::save(
                     handle->ctx, handle->prefix_cache_dir, prefix_snapshot, tokens, prefix_tokens
                 )) {
