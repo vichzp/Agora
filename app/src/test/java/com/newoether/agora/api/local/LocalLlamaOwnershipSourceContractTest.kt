@@ -402,6 +402,13 @@ class LocalLlamaOwnershipSourceContractTest {
         ).forEach { assertTrue(cmake.contains(it)) }
         assertTrue(cmake.contains("LIBRARY_OUTPUT_DIRECTORY \${CMAKE_LIBRARY_OUTPUT_DIRECTORY}"))
         assertTrue(cmake.contains("Required Android CPU backend target is missing"))
+        // Accelerators: the OpenCL stub loader must never be packaged, and every model load
+        // passes an explicit device list instead of llama.cpp's offload-everything default.
+        assertTrue(cmake.contains("set(GGML_OPENCL ON CACHE BOOL \"\" FORCE)"))
+        assertTrue(cmake.contains("opencl-link-stub"))
+        assertTrue(chatNative.contains("model_params.devices = devices;"))
+        assertTrue(chatNative.contains("model_params.n_gpu_layers = accelerator ? 999 : 0;"))
+        assertTrue(embeddingNative.contains("model_params.n_gpu_layers = 0;"))
 
         assertEquals(
             1,
