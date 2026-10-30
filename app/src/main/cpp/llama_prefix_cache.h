@@ -30,8 +30,11 @@ constexpr size_t MAX_SNAPSHOT_FILES = 4;
 // cache quota (StorageManager.getCacheQuotaBytes).
 constexpr uint64_t DEFAULT_MAX_SNAPSHOT_BYTES = 1ull * 1024 * 1024 * 1024;
 constexpr const char * SNAPSHOT_SUFFIX = ".kv";
-// States up to this size also stay in RAM; transformer KV caches are usually far larger.
-constexpr size_t MAX_MEMORY_CHECKPOINT_BYTES = 64ull * 1024 * 1024;
+// States up to this size also stay in RAM (LFM3-VL-2B: about 74 MB at 6k tokens);
+// transformer KV caches are usually far larger and rely on trimming instead.
+constexpr size_t MAX_MEMORY_CHECKPOINT_BYTES = 192ull * 1024 * 1024;
+// RAM shared by the prefix and turn checkpoints together.
+constexpr size_t MAX_MEMORY_TOTAL_BYTES = 320ull * 1024 * 1024;
 
 inline size_t common_prefix_length(const std::string & a, const std::string & b) {
     const size_t limit = std::min(a.size(), b.size());

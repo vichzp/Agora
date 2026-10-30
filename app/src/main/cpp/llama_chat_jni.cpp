@@ -1182,7 +1182,14 @@ Java_com_newoether_agora_api_LlamaChatEngine_nativeChatGenerate(
             agora::prefix_cache::remember(handle->ctx, turn, tokens, turn_tokens);
             if (!turn.checkpoint.empty()) {
                 handle->memory_turns.push_back(std::move(turn));
-                while (handle->memory_turns.size() > ChatHandle::MAX_MEMORY_TURNS) {
+                const auto total_bytes = [&]() {
+                    size_t total = handle->memory_prefix.checkpoint.size();
+                    for (const auto & item : handle->memory_turns) total += item.checkpoint.size();
+                    return total;
+                };
+                while (handle->memory_turns.size() > ChatHandle::MAX_MEMORY_TURNS ||
+                       (handle->memory_turns.size() > 1 &&
+                        total_bytes() > agora::prefix_cache::MAX_MEMORY_TOTAL_BYTES)) {
                     handle->memory_turns.pop_front();
                 }
             }
@@ -1195,6 +1202,10 @@ Java_com_newoether_agora_api_LlamaChatEngine_nativeChatGenerate(
                     prefix_snapshot, tokens, prefix_tokens
                 )) {
                 LOGD("Saved prompt prefix snapshot: %zu tokens", prefix_tokens);
+            } else {
+                LOGD("Prompt prefix snapshot not saved: %zu tokens, state %zu bytes, budget %llu",
+                     prefix_tokens, llama_state_seq_get_size(handle->ctx, 0),
+                     static_cast<unsigned long long>(handle->prefix_cache_max_bytes));
             }
         }
     }

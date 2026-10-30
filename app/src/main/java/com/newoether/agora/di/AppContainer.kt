@@ -291,14 +291,16 @@ class AppContainer(
 }
 
 /**
- * Half of Android's cache quota for this app, so prompt snapshots leave room for its other
- * caches, and never more than 1 GiB. Android clears the cache first above its quota.
+ * Android's cache quota for this app, between 256 MiB and 1 GiB. The quota is not a hard
+ * limit: above it Android clears this app's cache first when storage runs low. It starts
+ * small for rarely used apps, so the floor keeps room for one full-toolset prompt snapshot.
  */
 private fun prefixCacheBudgetBytes(application: Application): Long {
+    val floor = 256L shl 20
     val ceiling = 1L shl 30
     val quota = runCatching {
         val storage = application.getSystemService(android.os.storage.StorageManager::class.java)
         storage.getCacheQuotaBytes(storage.getUuidForPath(application.cacheDir))
-    }.getOrNull() ?: return 256L shl 20
-    return (quota / 2).coerceIn(64L shl 20, ceiling)
+    }.getOrNull() ?: return floor
+    return quota.coerceIn(floor, ceiling)
 }
