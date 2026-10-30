@@ -311,7 +311,7 @@ class LocalLlamaOwnershipSourceContractTest {
         assertTrue(prepare.contains("llama_memory_seq_rm("))
         assertTrue(prepare.contains("llama_memory_seq_pos_min(memory, 0)"))
         assertTrue(prepare.contains("llama_memory_seq_pos_max(memory, 0)"))
-        assertTrue(prepare.contains("pos_min == 0 && pos_max + 1 =="))
+        assertTrue(prepare.contains("(pos_min == 0 || recurrent) &&"))
         assertTrue(prepare.contains("clear_text_cache(handle);"))
         assertTrue(prepare.contains("handle->decoded_tokens.resize(retained_prefix);"))
 

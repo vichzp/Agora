@@ -60,6 +60,10 @@ struct ChatHandle {
     std::string prefix_cache_dir;  // empty disables prefix snapshots
     uint64_t prefix_cache_max_bytes = agora::prefix_cache::DEFAULT_MAX_SNAPSHOT_BYTES;
     agora::prefix_cache::MemoryPrefix memory_prefix;
+    // Small per-turn states, newest last: a few so that a title or other side request in
+    // between does not evict the conversation's checkpoint.
+    std::deque<agora::prefix_cache::MemoryPrefix> memory_turns;
+    static constexpr size_t MAX_MEMORY_TURNS = 3;
 
     std::string store_parser(
         const common_peg_arena & parser,
@@ -129,9 +133,13 @@ static size_t prepare_text_cache(
     );
     const llama_pos pos_min = llama_memory_seq_pos_min(memory, 0);
     const llama_pos pos_max = llama_memory_seq_pos_max(memory, 0);
+    // A recurrent state only holds its last position, so pos_min is not 0 for hybrid models.
+    const bool recurrent = llama_model_is_recurrent(handle->model) ||
+        llama_model_is_hybrid(handle->model);
     const bool memory_matches = retained_prefix == 0
         ? pos_max == -1
-        : pos_min == 0 && pos_max + 1 == static_cast<llama_pos>(retained_prefix);
+        : (pos_min == 0 || recurrent) &&
+            pos_max + 1 == static_cast<llama_pos>(retained_prefix);
     if (!removed || !memory_matches) {
         clear_text_cache(handle);
         return 0;
@@ -1075,6 +1083,34 @@ Java_com_newoether_agora_api_LlamaChatEngine_nativeChatGenerate(
             );
         }
     }
+    // Hybrid models cannot trim back to the shared history, so resume from the last turn's
+    // checkpoint (the longest one that is still a prefix of this prompt).
+    size_t turn_tokens = 0;
+    if (!handle->prefix_cache_dir.empty() && !prefix_template.delimiters.delimiters.empty()) {
+        turn_tokens = agora::prefix_cache::turn_boundary(
+            handle->vocab, prefix_template.delimiters, tokens
+        );
+        const agora::prefix_cache::MemoryPrefix * best = nullptr;
+        for (const auto & turn : handle->memory_turns) {
+            if (turn.tokens.size() > static_cast<size_t>(cached_tokens) &&
+                (!best || turn.tokens.size() > best->tokens.size()) &&
+                agora::prefix_cache::covers(turn, tokens, turn.tokens.size())) {
+                best = &turn;
+            }
+        }
+        if (best) {
+            const size_t count = best->tokens.size();
+            if (agora::prefix_cache::restore_memory(handle->ctx, *best, tokens, count)) {
+                handle->decoded_tokens.assign(tokens.begin(), tokens.begin() + count);
+                cached_tokens = static_cast<int32_t>(count);
+                LOGD("Restored previous turn checkpoint: %zu tokens", count);
+            } else {
+                handle->decoded_tokens.clear();
+                cached_tokens = 0;
+            }
+        }
+    }
+
     if (!prefix_snapshot.empty() && static_cast<size_t>(cached_tokens) < prefix_tokens) {
         if (agora::prefix_cache::restore_memory(
                 handle->ctx, handle->memory_prefix, tokens, prefix_tokens
@@ -1109,10 +1145,14 @@ Java_com_newoether_agora_api_LlamaChatEngine_nativeChatGenerate(
             common_sampler_free(smpl);
             return report_done(env, callback, callbacks, "cancelled", input_tokens, 0);
         }
-        // Stop exactly at the prefix boundary once, so the snapshot holds only the prefix.
-        const int32_t segment_end = save_prefix && off < static_cast<int32_t>(prefix_tokens)
-            ? static_cast<int32_t>(prefix_tokens)
-            : n_tokens;
+        // Stop exactly at the prefix and turn boundaries, so each saved state holds only
+        // the tokens before it.
+        int32_t segment_end = n_tokens;
+        if (save_prefix && off < static_cast<int32_t>(prefix_tokens)) {
+            segment_end = static_cast<int32_t>(prefix_tokens);
+        } else if (turn_tokens > 0 && off < static_cast<int32_t>(turn_tokens)) {
+            segment_end = static_cast<int32_t>(turn_tokens);
+        }
         const int32_t chunk = std::min(n_batch, segment_end - off);
         llama_batch batch = llama_batch_get_one(tokens.data() + off, chunk);
         const int32_t decode_result = llama_decode(handle->ctx, batch);
@@ -1137,6 +1177,16 @@ Java_com_newoether_agora_api_LlamaChatEngine_nativeChatGenerate(
         );
         input_tokens += chunk;
         off += chunk;
+        if (turn_tokens > 0 && off == static_cast<int32_t>(turn_tokens)) {
+            agora::prefix_cache::MemoryPrefix turn;
+            agora::prefix_cache::remember(handle->ctx, turn, tokens, turn_tokens);
+            if (!turn.checkpoint.empty()) {
+                handle->memory_turns.push_back(std::move(turn));
+                while (handle->memory_turns.size() > ChatHandle::MAX_MEMORY_TURNS) {
+                    handle->memory_turns.pop_front();
+                }
+            }
+        }
         if (save_prefix && off == static_cast<int32_t>(prefix_tokens)) {
             save_prefix = false;
             agora::prefix_cache::remember(handle->ctx, handle->memory_prefix, tokens, prefix_tokens);

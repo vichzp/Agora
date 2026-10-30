@@ -103,11 +103,37 @@ inline size_t prefix_token_count(
     return boundary >= MIN_PREFIX_TOKENS ? boundary : 0;
 }
 
+// Start of the last assistant message in the prompt (for a new request, its generation
+// prompt). The next turn's prompt is guaranteed to share everything before it: the reply
+// itself is re-rendered differently (reasoning dropped), so llama-server checkpoints at
+// message boundaries too. 0 when the template has no delimiters.
+inline size_t turn_boundary(
+    const llama_vocab * vocab,
+    common_chat_msg_delimiters delimiters,
+    const std::vector<llama_token> & prompt_tokens
+) {
+    if (delimiters.delimiters.empty()) return 0;
+    delimiters.tokenize(vocab);
+    const auto spans = delimiters.split(prompt_tokens).spans;
+    for (auto it = spans.rbegin(); it != spans.rend(); ++it) {
+        if (it->role == COMMON_CHAT_ROLE_ASSISTANT) {
+            return it->pos < prompt_tokens.size() && it->pos >= MIN_PREFIX_TOKENS ? it->pos : 0;
+        }
+    }
+    return 0;
+}
+
 // The most recent prefix state, kept in RAM when it is small (hybrid and recurrent models).
 struct MemoryPrefix {
     std::vector<llama_token> tokens;
     common_prompt_checkpoint checkpoint;
 };
+
+// Whether `cached` holds exactly the first `count` prompt tokens.
+inline bool covers(const MemoryPrefix & cached, const std::vector<llama_token> & tokens, size_t count) {
+    return !cached.checkpoint.empty() && cached.tokens.size() == count && count < tokens.size() &&
+        std::equal(cached.tokens.begin(), cached.tokens.end(), tokens.begin());
+}
 
 inline bool restore_memory(
     llama_context * ctx,
@@ -115,8 +141,7 @@ inline bool restore_memory(
     const std::vector<llama_token> & tokens,
     size_t count
 ) {
-    if (cached.checkpoint.empty() || cached.tokens.size() != count ||
-        !std::equal(cached.tokens.begin(), cached.tokens.end(), tokens.begin())) return false;
+    if (!covers(cached, tokens, count)) return false;
     llama_memory_t memory = llama_get_memory(ctx);
     llama_memory_clear(memory, true);
     if (!cached.checkpoint.load_tgt(ctx, 0, LLAMA_STATE_SEQ_FLAGS_NONE) ||
