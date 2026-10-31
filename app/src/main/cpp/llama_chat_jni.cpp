@@ -15,6 +15,7 @@
 #include <android/log.h>
 #include "llama.h"
 #include "ggml-backend.h"
+#include "gguf.h"
 #include "chat.h"
 #include "sampling.h"
 #include "nlohmann/json.hpp"
@@ -781,6 +782,39 @@ static ggml_backend_dev_t find_accelerator(const std::string & name) {
     return nullptr;
 }
 
+// Whether the OpenCL backend can multiply this model's layer weights on the GPU. Types it lacks
+// kernels for (IQ4_XS and the other IQ quants, Q8_0, ...) run on the CPU with activations
+// copied back and forth on every layer, which is slower than staying on the CPU. Allows a few
+// such tensors (some mixes keep single tensors at another type).
+static bool opencl_runs_weights(const char * path) {
+    gguf_init_params params{/*no_alloc =*/ true, /*ctx =*/ nullptr};
+    gguf_context * gguf = gguf_init_from_file(path, params);
+    if (!gguf) return false;
+    int64_t weights = 0;
+    int64_t unsupported = 0;
+    for (int64_t i = 0; i < gguf_get_n_tensors(gguf); ++i) {
+        const std::string name = gguf_get_tensor_name(gguf, i);
+        if (name.rfind("blk.", 0) != 0 || name.size() < 7 ||
+            name.compare(name.size() - 7, 7, ".weight") != 0) continue;
+        const ggml_type type = gguf_get_tensor_type(gguf, i);
+        if (type == GGML_TYPE_F32) continue;  // norms and other small vectors
+        ++weights;
+        switch (type) {
+            // ggml-opencl MUL_MAT support in llama.cpp b11976
+            case GGML_TYPE_F16: case GGML_TYPE_BF16:
+            case GGML_TYPE_Q1_0: case GGML_TYPE_Q2_K: case GGML_TYPE_Q3_K:
+            case GGML_TYPE_Q4_0: case GGML_TYPE_Q4_1: case GGML_TYPE_Q4_K:
+            case GGML_TYPE_Q5_0: case GGML_TYPE_Q5_1: case GGML_TYPE_Q5_K:
+            case GGML_TYPE_Q6_K: case GGML_TYPE_IQ4_NL: case GGML_TYPE_MXFP4:
+                break;
+            default:
+                ++unsupported;
+        }
+    }
+    gguf_free(gguf);
+    return weights > 0 && unsupported * 10 <= weights;
+}
+
 // Loads the model and context on `accelerator`, or CPU only when it is null. The device list is
 // always explicit: llama.cpp's defaults would otherwise offload every layer (and large prompt
 // batches) to any GPU backend that happens to load.
@@ -871,6 +905,10 @@ Java_com_newoether_agora_api_LlamaChatEngine_nativeChatLoadModel(
     ggml_backend_dev_t accelerator = find_accelerator(preferred);
     if (!accelerator && preferred != "CPU") {
         LOGD("Preferred backend %s is not available on this device; using CPU", preferred.c_str());
+    }
+    if (accelerator && preferred == "OpenCL" && !opencl_runs_weights(path_str)) {
+        LOGD("OpenCL has no kernels for this model's weight types; using CPU");
+        accelerator = nullptr;
     }
     ChatHandle * handle = load_chat_handle(path_str, n_ctx, accelerator);
     if (!handle && accelerator) {
