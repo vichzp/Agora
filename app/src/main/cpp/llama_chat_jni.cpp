@@ -41,6 +41,7 @@ using agora::chat::init_callbacks;
 using agora::chat::read_template_metadata;
 using agora::chat::report_error;
 using agora::chat::report_done;
+using agora::chat::report_prefill;
 using agora::chat::utf8_complete_prefix_len;
 using agora::jni::read_java_path;
 using agora::jni::read_java_string;
@@ -336,6 +337,8 @@ Java_com_newoether_agora_api_LlamaChatEngine_nativeChatGenerate(
     LOGD("Text prefill: input_tokens=%d, cached_tokens=%d, processed_tokens=%d, duration_ms=%lld",
          input_tokens, cached_tokens, input_tokens - cached_tokens,
          (long long)prefill_ms);
+    report_prefill(env, callback, callbacks, handle->backend, cached_tokens,
+                   input_tokens - cached_tokens, (long long)prefill_ms);
 
     const int32_t context_after_prefill =
         llama_memory_seq_pos_max(llama_get_memory(handle->ctx), 0) + 1;
@@ -678,6 +681,8 @@ Java_com_newoether_agora_api_LlamaChatEngine_nativeChatGenerateWithImages(
     ).count();
     LOGD("Multimodal prefill: input_tokens=%lld, images=%d, duration_ms=%lld",
          (long long)n_past, n_images, (long long)prefill_ms);
+    report_prefill(env, callback, callbacks, handle->backend, 0,
+                   static_cast<int32_t>(n_past), (long long)prefill_ms);
 
     // --- Generation loop (same as text-only path) ---
     std::string sampler_error;

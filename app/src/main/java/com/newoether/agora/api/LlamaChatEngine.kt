@@ -36,6 +36,12 @@ internal sealed interface LlamaGenerationEvent {
     data class Thought(val value: String) : LlamaGenerationEvent
     data class ToolCallUpdate(val call: LlamaToolCall) : LlamaGenerationEvent
     data class ToolCallsCompleted(val calls: List<LlamaToolCall>) : LlamaGenerationEvent
+    data class Prefill(
+        val backend: String,
+        val cachedTokens: Int,
+        val processedTokens: Int,
+        val prefillMs: Long,
+    ) : LlamaGenerationEvent
     data class Completed(
         val reason: LlamaGenerationStopReason,
         val inputTokenCount: Int,
@@ -56,6 +62,7 @@ interface NativeChatCallback {
     fun onToolCallsComplete(): Boolean
     fun onDone(reason: String, inputTokenCount: Int, outputTokenCount: Int)
     fun onError(message: String, inputTokenCount: Int, outputTokenCount: Int)
+    fun onPrefill(backend: String, cachedTokens: Int, processedTokens: Int, prefillMs: Long)
 }
 
 class ChatTemplateToolCall(
@@ -295,6 +302,18 @@ class LlamaChatEngine(
                 return trySendBlocking(LlamaGenerationEvent.ToolCallUpdate(call)).isSuccess
             }
 
+            override fun onPrefill(
+                backend: String,
+                cachedTokens: Int,
+                processedTokens: Int,
+                prefillMs: Long,
+            ) {
+                if (terminalSignalled.get()) return
+                trySendBlocking(
+                    LlamaGenerationEvent.Prefill(backend, cachedTokens, processedTokens, prefillMs)
+                )
+            }
+
             override fun onToolCallsComplete(): Boolean {
                 if (terminalSignalled.get()) return false
                 if (toolCalls.isEmpty()) return true
@@ -467,6 +486,18 @@ class LlamaChatEngine(
                 )
                 toolCalls[index] = call
                 return trySendBlocking(LlamaGenerationEvent.ToolCallUpdate(call)).isSuccess
+            }
+
+            override fun onPrefill(
+                backend: String,
+                cachedTokens: Int,
+                processedTokens: Int,
+                prefillMs: Long,
+            ) {
+                if (terminalSignalled.get()) return
+                trySendBlocking(
+                    LlamaGenerationEvent.Prefill(backend, cachedTokens, processedTokens, prefillMs)
+                )
             }
 
             override fun onToolCallsComplete(): Boolean {

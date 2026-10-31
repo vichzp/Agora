@@ -15,6 +15,8 @@ import com.newoether.agora.model.TokenUsage
 internal class GenerationOutputAccumulator(
     toolExecutor: GenerationToolPresentationSource,
     providerName: String,
+    /** Receives on-device run details for the message info card. */
+    private val onLocalRunStats: (StreamEvent.LocalRunStats) -> Unit = {},
 ) {
     val totalText = StringBuilder()
     var totalThoughts = ""
@@ -209,6 +211,7 @@ internal class GenerationOutputAccumulator(
                     currentThoughtSignatureProvider = provider.name
                 }
             }
+            is StreamEvent.LocalRunStats -> onLocalRunStats(event)
             is StreamEvent.UsageUpdate -> {
                 tokenUsageAccumulator.observeRequestSnapshot(event.usage)
                 totalTokenUsage = tokenUsageAccumulator.snapshot()
