@@ -71,7 +71,7 @@ class ChatTopBarTest {
                 }
             }
         }
-        compose.onNodeWithText("Agora").assertDoesNotExist()
+        compose.onNodeWithText("Agora Vx-mod").assertDoesNotExist()
         compose.onNodeWithText("Conversation").assertDoesNotExist()
         compose.onNodeWithContentDescription(resources.getString(R.string.menu)).performClick()
         assertEquals(1, drawerOpens)
@@ -79,11 +79,11 @@ class ChatTopBarTest {
         compose.onNodeWithText("Conversation").assertIsDisplayed()
         compose.runOnIdle { newChat = true }
         compose.onNodeWithText("Conversation").assertDoesNotExist()
-        compose.onNodeWithText("Agora").assertDoesNotExist()
+        compose.onNodeWithText("Agora Vx-mod").assertDoesNotExist()
         compose.runOnIdle { reduced = true; newChat = false; title = null }
-        compose.onNodeWithText("Agora").assertIsDisplayed()
+        compose.onNodeWithText("Agora Vx-mod").assertIsDisplayed()
         compose.runOnIdle { newChat = true }
-        compose.onNodeWithText("Agora").assertDoesNotExist()
+        compose.onNodeWithText("Agora Vx-mod").assertDoesNotExist()
         compose.onNodeWithContentDescription(resources.getString(R.string.menu)).assertIsDisplayed()
         compose.onNodeWithContentDescription(resources.getString(R.string.new_chat)).assertIsDisplayed()
     }
