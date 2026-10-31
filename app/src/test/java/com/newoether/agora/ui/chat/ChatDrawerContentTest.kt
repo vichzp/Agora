@@ -65,12 +65,12 @@ class ChatDrawerContentTest {
                 }
             }
         }
-        compose.onNodeWithText("Agora").assertIsDisplayed()
+        compose.onNodeWithText("Agora Vx-mod").assertIsDisplayed()
         compose.onNode(hasSetTextAction()).assertDoesNotExist()
         compose.onNodeWithContentDescription(hint).assertWidthIsEqualTo(56.dp).assertHeightIsEqualTo(56.dp)
             .performClick()
         compose.onNode(hasSetTextAction()).assertIsFocused().performTextInput("alpha")
-        compose.onNodeWithText("Agora").assertDoesNotExist()
+        compose.onNodeWithText("Agora Vx-mod").assertDoesNotExist()
         val root = compose.onRoot().fetchSemanticsNode().boundsInRoot
         val capsule = compose.onNodeWithTag("DrawerHeaderSearch").assertHeightIsEqualTo(56.dp)
             .fetchSemanticsNode().boundsInRoot
@@ -85,11 +85,11 @@ class ChatDrawerContentTest {
         compose.onNodeWithContentDescription(resources.getString(R.string.back)).performClick()
         compose.runOnIdle { assertEquals("", query) }
         compose.onNode(hasSetTextAction()).assertDoesNotExist()
-        compose.onNodeWithText("Agora").assertIsDisplayed()
+        compose.onNodeWithText("Agora Vx-mod").assertIsDisplayed()
         compose.runOnIdle { reduced = true; width = 248.dp }
         compose.onNodeWithContentDescription(hint).performClick()
         compose.onNode(hasSetTextAction()).assertIsFocused().performTextInput("narrow")
-        compose.onNodeWithText("Agora").assertDoesNotExist()
+        compose.onNodeWithText("Agora Vx-mod").assertDoesNotExist()
         val narrow = compose.onNodeWithTag("DrawerHeaderSearch").fetchSemanticsNode().boundsInRoot
         assertEquals(compose.onRoot().fetchSemanticsNode().boundsInRoot.width, narrow.width, 1f)
         compose.onNodeWithContentDescription(resources.getString(R.string.back)).performClick()
@@ -157,9 +157,9 @@ class ChatDrawerContentTest {
         compose.waitForIdle()
         compose.mainClock.advanceTimeByFrame()
         compose.mainClock.advanceTimeBy(80)
-        compose.onNodeWithText("Agora").assertExists()
+        compose.onNodeWithText("Agora Vx-mod").assertExists()
         compose.mainClock.advanceTimeBy(450)
-        compose.onNodeWithText("Agora").assertDoesNotExist()
+        compose.onNodeWithText("Agora Vx-mod").assertDoesNotExist()
         compose.mainClock.autoAdvance = true
         compose.onNode(hasSetTextAction()).performTextInput("retained")
         val capsule = compose.onNodeWithTag("DrawerHeaderSearch").fetchSemanticsNode().boundsInRoot
@@ -173,7 +173,7 @@ class ChatDrawerContentTest {
         compose.runOnIdle { visible = false }
         compose.onNode(hasSetTextAction()).assertDoesNotExist()
         compose.runOnIdle { assertEquals("", query) }
-        compose.onNodeWithText("Agora").assertIsDisplayed()
+        compose.onNodeWithText("Agora Vx-mod").assertIsDisplayed()
         compose.runOnIdle { visible = true }
         compose.onNode(hasSetTextAction()).assertDoesNotExist()
         compose.onNodeWithContentDescription(resources.getString(R.string.search_hint)).performClick()
