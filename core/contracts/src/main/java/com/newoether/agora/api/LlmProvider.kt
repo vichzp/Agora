@@ -79,6 +79,14 @@ sealed class StreamEvent {
         val resetCurrentAttempt: Boolean = false,
         val error: GenerationError? = null,
     ) : StreamEvent()
+    /** On-device run details for the message info card (not sent to any model). */
+    data class LocalRunStats(
+        val backend: String,
+        val promptProcessedTokens: Int,
+        val promptCachedTokens: Int,
+        val promptMs: Long,
+        val firstTokenMs: Long?,
+    ) : StreamEvent()
 }
 
 data class ProviderRequestInput(

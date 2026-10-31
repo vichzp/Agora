@@ -79,6 +79,10 @@ bool init_callbacks(JNIEnv * env, jobject callback, NativeChatCallbacks & method
     );
     methods.on_done = env->GetMethodID(methods.clazz, "onDone", "(Ljava/lang/String;II)V");
     methods.on_error = env->GetMethodID(methods.clazz, "onError", "(Ljava/lang/String;II)V");
+    methods.on_prefill = env->GetMethodID(
+        methods.clazz, "onPrefill", "(Ljava/lang/String;IIJ)V"
+    );
+    if (!methods.on_prefill && env->ExceptionCheck()) env->ExceptionClear();
     if (methods.on_text && methods.on_thought && methods.on_tool_call &&
         methods.on_tool_calls_complete && methods.on_done && methods.on_error) return true;
     if (env->ExceptionCheck()) env->ExceptionClear();
@@ -105,6 +109,26 @@ jint report_error(
     env->DeleteLocalRef(methods.clazz);
     methods.clazz = nullptr;
     return -1;
+}
+
+void report_prefill(
+    JNIEnv * env,
+    jobject callback,
+    NativeChatCallbacks & methods,
+    const std::string & backend,
+    int32_t cached_tokens,
+    int32_t processed_tokens,
+    long long prefill_ms
+) {
+    if (!methods.on_prefill) return;
+    jstring jbackend = env->NewStringUTF(backend.c_str());
+    env->CallVoidMethod(
+        callback, methods.on_prefill, jbackend,
+        static_cast<jint>(cached_tokens), static_cast<jint>(processed_tokens),
+        static_cast<jlong>(prefill_ms)
+    );
+    env->DeleteLocalRef(jbackend);
+    if (env->ExceptionCheck()) env->ExceptionClear();
 }
 
 jint report_done(
