@@ -197,6 +197,16 @@ object DeveloperDiagnostics {
             ),
             content = DiagnosticRedactor.captureContent(thought),
         )
+        is StreamEvent.LocalRunStats -> ParsedEventDetails(
+            eventType = "LocalRunStats",
+            attributes = mapOf(
+                "backend" to backend,
+                "promptProcessedTokens" to promptProcessedTokens.toString(),
+                "promptCachedTokens" to promptCachedTokens.toString(),
+                "promptMs" to promptMs.toString(),
+                "firstTokenMs" to (firstTokenMs?.toString() ?: ""),
+            ),
+        )
         is StreamEvent.UsageUpdate -> ParsedEventDetails(
             eventType = "UsageUpdate",
             attributes = buildMap {

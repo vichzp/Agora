@@ -95,6 +95,7 @@ internal class ProviderPassRunner(
                 is StreamEvent.HostedToolCallUpdate,
                 is StreamEvent.UsageUpdate,
                 is StreamEvent.Retrying,
+                is StreamEvent.LocalRunStats,
                 -> Unit
             }
             try {

@@ -65,6 +65,13 @@ class LocalProvider(
         messages: List<ChatMessage>,
         config: ProviderConfig
     ): Flow<StreamEvent> = flow {
+        // Time to first token as the user sees it: includes queueing and model loading.
+        val requestStartedNanos = System.nanoTime()
+        var firstTokenMs: Long? = null
+        var prefill: LlamaGenerationEvent.Prefill? = null
+        fun markFirstToken() {
+            if (firstTokenMs == null) firstTokenMs = (System.nanoTime() - requestStartedNanos) / 1_000_000L
+        }
         val chatModels = settings.localChatModels.first()
         val modelConfig = chatModels.find { it.modelId == config.modelId }
         if (modelConfig == null) {
@@ -187,12 +194,20 @@ class LocalProvider(
                     }
                     when (event) {
                         is LlamaGenerationEvent.Text -> {
-                            if (event.value.isNotEmpty()) emit(StreamEvent.TextChunk(event.value))
+                            if (event.value.isNotEmpty()) {
+                                markFirstToken()
+                                emit(StreamEvent.TextChunk(event.value))
+                            }
                         }
                         is LlamaGenerationEvent.Thought -> {
-                            if (event.value.isNotEmpty()) emit(StreamEvent.ThoughtChunk(event.value))
+                            if (event.value.isNotEmpty()) {
+                                markFirstToken()
+                                emit(StreamEvent.ThoughtChunk(event.value))
+                            }
                         }
+                        is LlamaGenerationEvent.Prefill -> prefill = event
                         is LlamaGenerationEvent.ToolCallUpdate -> {
+                            markFirstToken()
                             val call = event.call
                             emit(
                                 StreamEvent.ToolCallUpdate(
@@ -272,11 +287,27 @@ class LocalProvider(
             return@runChat
         }
 
+        val runPrefill = prefill
+        if (runPrefill != null) {
+            emit(
+                StreamEvent.LocalRunStats(
+                    backend = runPrefill.backend,
+                    promptProcessedTokens = runPrefill.processedTokens.coerceAtLeast(0),
+                    promptCachedTokens = runPrefill.cachedTokens.coerceAtLeast(0),
+                    promptMs = runPrefill.prefillMs.coerceAtLeast(0),
+                    firstTokenMs = firstTokenMs,
+                )
+            )
+        }
         emit(
             StreamEvent.UsageUpdate(
                 TokenUsage(
                     totalTokenCount = (inputTokenCount + outputTokenCount).coerceAtLeast(0),
                     inputTokenCount = inputTokenCount.coerceAtLeast(0),
+                    // Prompt tokens restored from the prefix/turn cache vs. actually processed,
+                    // like a cloud provider's prompt-cache split.
+                    cachedInputTokenCount = runPrefill?.cachedTokens?.coerceAtLeast(0),
+                    uncachedInputTokenCount = runPrefill?.processedTokens?.coerceAtLeast(0),
                     outputTokenCount = outputTokenCount.coerceAtLeast(0),
                 )
             )

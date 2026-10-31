@@ -535,6 +535,18 @@ class GenerationManager(
                             currentThoughtSignatureProvider = provider.name
                         }
                     }
+                    is StreamEvent.LocalRunStats -> {
+                        com.newoether.agora.data.LocalRunStatsStore.record(
+                            modelMessageId,
+                            com.newoether.agora.data.LocalRunStats(
+                                backend = event.backend,
+                                promptProcessedTokens = event.promptProcessedTokens,
+                                promptCachedTokens = event.promptCachedTokens,
+                                promptMs = event.promptMs,
+                                firstTokenMs = event.firstTokenMs,
+                            ),
+                        )
+                    }
                     is StreamEvent.UsageUpdate -> {
                         tokenUsageAccumulator.observeRequestSnapshot(event.usage)
                         totalTokenUsage = tokenUsageAccumulator.snapshot()

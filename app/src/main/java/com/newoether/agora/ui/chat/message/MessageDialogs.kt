@@ -42,6 +42,9 @@ internal fun MessageInfoDialog(
         modelDisplayName(message.modelName, modelAliases, customProviders, showProviderName)
     } else stringResource(R.string.unknown)
     val tokenUsage = tokenUsagePresentation(message.tokenUsage)
+    val localRun = remember(message.id) {
+        com.newoether.agora.data.LocalRunStatsStore.get(message.id)
+    }
     val inputTokens = when {
         tokenUsage.input == null -> "—"
         tokenUsage.cachedInput != null -> stringResource(
@@ -95,6 +98,7 @@ internal fun MessageInfoDialog(
                         stringResource(R.string.generation_speed_with_label, generationSpeed),
                         style = MaterialTheme.typography.bodyMedium.copy(fontSize = 14.sp, lineHeight = 20.sp),
                     )
+                    localRun?.let { run -> LocalRunDetails(run) }
                 }
             }
         },
@@ -201,4 +205,43 @@ internal fun MessageDeleteDialog(
             }
         }
     )
+}
+
+/** On-device run details: backend, prompt processing and time to first token. */
+@Composable
+private fun LocalRunDetails(run: com.newoether.agora.data.LocalRunStats) {
+    val style = MaterialTheme.typography.bodyMedium.copy(fontSize = 14.sp, lineHeight = 20.sp)
+    val promptSpeed = run.promptTokensPerSecond?.let {
+        String.format(Locale.getDefault(), "%.0f token/s", it)
+    } ?: "—"
+    val promptSeconds = String.format(Locale.getDefault(), "%.1f", run.promptMs / 1000.0)
+    Spacer(modifier = Modifier.height(8.dp))
+    Text(
+        stringResource(
+            R.string.local_prompt_processing_with_label,
+            run.promptProcessedTokens,
+            promptSeconds,
+            promptSpeed,
+        ),
+        style = style,
+    )
+    run.firstTokenMs?.let { ms ->
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(
+            stringResource(
+                R.string.local_first_token_with_label,
+                String.format(Locale.getDefault(), "%.1f", ms / 1000.0),
+            ),
+            style = style,
+        )
+    }
+    Spacer(modifier = Modifier.height(8.dp))
+    Text(stringResource(R.string.local_backend_with_label, localBackendLabel(run.backend)), style = style)
+}
+
+/** "GPUOpenCL" → "GPU (OpenCL)"; CPU reasons ("CPU: weights unsupported on GPU") pass through. */
+internal fun localBackendLabel(backend: String): String = when {
+    backend.startsWith("CPU") -> backend
+    backend.startsWith("GPU") && backend.length > 3 -> "GPU (${backend.removePrefix("GPU")})"
+    else -> backend
 }

@@ -218,6 +218,7 @@ struct NativeChatCallbacks {
     jmethodID on_tool_calls_complete = nullptr;
     jmethodID on_done = nullptr;
     jmethodID on_error = nullptr;
+    jmethodID on_prefill = nullptr;  // optional: run details for the message info card
 };
 
 static bool init_callbacks(JNIEnv * env, jobject callback, NativeChatCallbacks & methods) {
@@ -236,6 +237,10 @@ static bool init_callbacks(JNIEnv * env, jobject callback, NativeChatCallbacks &
     );
     methods.on_done = env->GetMethodID(methods.clazz, "onDone", "(Ljava/lang/String;II)V");
     methods.on_error = env->GetMethodID(methods.clazz, "onError", "(Ljava/lang/String;II)V");
+    methods.on_prefill = env->GetMethodID(
+        methods.clazz, "onPrefill", "(Ljava/lang/String;IIJ)V"
+    );
+    if (!methods.on_prefill && env->ExceptionCheck()) env->ExceptionClear();
     if (methods.on_text && methods.on_thought && methods.on_tool_call &&
         methods.on_tool_calls_complete && methods.on_done && methods.on_error) return true;
     if (env->ExceptionCheck()) env->ExceptionClear();
@@ -262,6 +267,27 @@ static jint report_error(
     env->DeleteLocalRef(methods.clazz);
     methods.clazz = nullptr;
     return -1;
+}
+
+// Backend, cache hits and prompt-processing time of one request, for the message info card.
+static void report_prefill(
+    JNIEnv * env,
+    jobject callback,
+    NativeChatCallbacks & methods,
+    const std::string & backend,
+    int32_t cached_tokens,
+    int32_t processed_tokens,
+    long long prefill_ms
+) {
+    if (!methods.on_prefill) return;
+    jstring jbackend = env->NewStringUTF(backend.c_str());
+    env->CallVoidMethod(
+        callback, methods.on_prefill, jbackend,
+        static_cast<jint>(cached_tokens), static_cast<jint>(processed_tokens),
+        static_cast<jlong>(prefill_ms)
+    );
+    env->DeleteLocalRef(jbackend);
+    if (env->ExceptionCheck()) env->ExceptionClear();
 }
 
 static jint report_done(
@@ -903,17 +929,24 @@ Java_com_newoether_agora_api_LlamaChatEngine_nativeChatLoadModel(
         preferred = g_preferred_backend;
     }
     ggml_backend_dev_t accelerator = find_accelerator(preferred);
+    std::string cpu_reason;  // why a preferred accelerator was not used, for the info card
     if (!accelerator && preferred != "CPU") {
         LOGD("Preferred backend %s is not available on this device; using CPU", preferred.c_str());
+        cpu_reason = preferred + " unavailable";
     }
     if (accelerator && preferred == "OpenCL" && !opencl_runs_weights(path_str)) {
         LOGD("OpenCL has no kernels for this model's weight types; using CPU");
         accelerator = nullptr;
+        cpu_reason = "weights unsupported on GPU";
     }
     ChatHandle * handle = load_chat_handle(path_str, n_ctx, accelerator);
     if (!handle && accelerator) {
         LOGE("Loading on %s failed; retrying on CPU", ggml_backend_dev_name(accelerator));
         handle = load_chat_handle(path_str, n_ctx, nullptr);
+        cpu_reason = "GPU load failed";
+    }
+    if (handle && handle->backend == "CPU" && !cpu_reason.empty()) {
+        handle->backend = "CPU: " + cpu_reason;
     }
     env->ReleaseStringUTFChars(path, path_str);
     return reinterpret_cast<jlong>(handle);
@@ -1316,6 +1349,8 @@ Java_com_newoether_agora_api_LlamaChatEngine_nativeChatGenerate(
     LOGD("Text prefill: input_tokens=%d, cached_tokens=%d, processed_tokens=%d, duration_ms=%lld",
          input_tokens, cached_tokens, input_tokens - cached_tokens,
          (long long)prefill_ms);
+    report_prefill(env, callback, callbacks, handle->backend, cached_tokens,
+                   input_tokens - cached_tokens, (long long)prefill_ms);
 
     const int32_t context_after_prefill =
         llama_memory_seq_pos_max(llama_get_memory(handle->ctx), 0) + 1;
@@ -1662,6 +1697,8 @@ Java_com_newoether_agora_api_LlamaChatEngine_nativeChatGenerateWithImages(
     ).count();
     LOGD("Multimodal prefill: input_tokens=%lld, images=%d, duration_ms=%lld",
          (long long)n_past, n_images, (long long)prefill_ms);
+    report_prefill(env, callback, callbacks, handle->backend, 0,
+                   static_cast<int32_t>(n_past), (long long)prefill_ms);
 
     // --- Generation loop (same as text-only path) ---
     std::string sampler_error;

@@ -27,11 +27,11 @@ android {
         applicationId = "com.newoether.agora"
         minSdk = 26
         targetSdk = 36
-        versionCode = 40
+        versionCode = 41
         versionName = "2.1.0"
         // VxNet fork: installs beside upstream Agora under its own package and key
         applicationIdSuffix = ".vx"
-        versionNameSuffix = "-vx4.6"
+        versionNameSuffix = "-vx4.7"
 
 
         ndk {
