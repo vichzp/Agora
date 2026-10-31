@@ -17,6 +17,7 @@ struct NativeChatCallbacks {
     jmethodID on_tool_calls_complete = nullptr;
     jmethodID on_done = nullptr;
     jmethodID on_error = nullptr;
+    jmethodID on_prefill = nullptr;  // optional: run details for the message info card
 };
 
 size_t utf8_complete_prefix_len(const std::string & text);
@@ -32,6 +33,17 @@ jint report_error(
     const char * message,
     int32_t input_tokens,
     int32_t output_tokens
+);
+
+// Backend, cache hits and prompt-processing time of one request, for the message info card.
+void report_prefill(
+    JNIEnv * env,
+    jobject callback,
+    NativeChatCallbacks & methods,
+    const std::string & backend,
+    int32_t cached_tokens,
+    int32_t processed_tokens,
+    long long prefill_ms
 );
 
 jint report_done(

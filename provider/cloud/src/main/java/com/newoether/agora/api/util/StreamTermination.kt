@@ -137,6 +137,7 @@ fun StreamEvent.carriesModelOutput(): Boolean = when (this) {
     is StreamEvent.ToolCallsRequest -> true
     is StreamEvent.UsageUpdate -> false
     is StreamEvent.Retrying -> false
+    is StreamEvent.LocalRunStats -> false
     is StreamEvent.Error -> false
 }
 
