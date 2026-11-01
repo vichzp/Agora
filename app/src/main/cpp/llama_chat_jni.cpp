@@ -126,6 +126,11 @@ static ChatHandle * load_chat_handle(
     llama_model_params model_params = llama_model_default_params();
     model_params.devices = devices;
     model_params.n_gpu_layers = accelerator ? 999 : 0;
+    // Read the tensors an architecture marks for on-demand reads (Gemma-4 E-models' per-layer
+    // embedding table, several GB) row by row from the file. The default AUTO only does this
+    // above 4 GiB and is switched off whenever a device lacks mmap support, as OpenCL does,
+    // which would copy the whole table into RAM. Explicit ON works with or without mmap.
+    model_params.lazy_mode = LLAMA_LAZY_MODE_ON;
     const auto model_started = std::chrono::steady_clock::now();
     handle->model = llama_model_load_from_file(path_str.c_str(), model_params);
     handle->path = path_str;  // keys the prompt-prefix snapshots
