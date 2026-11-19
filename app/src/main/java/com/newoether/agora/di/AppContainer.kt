@@ -71,7 +71,7 @@ class AppContainer(
     init {
         LocalModelRuntime.initialize(application.applicationInfo.nativeLibraryDir)
         com.newoether.agora.data.LocalRunStatsStore.initialize(application)
-        com.newoether.agora.api.LlamaChatEngine.setPreferredBackend(
+        LocalModelRuntime.setPreferredBackend(
             com.newoether.agora.api.local.LocalAcceleratorTable.preferredBackend()
         )
         LocalModelRuntime.setPrefixCacheDirectory(
