@@ -122,6 +122,17 @@ internal object LocalModelRuntime {
     @Volatile
     private var memoryCheckpointBudget: MemoryCheckpointBudget? = null
 
+    @Volatile
+    private var preferredBackend: String? = null
+
+    /**
+     * Accelerator for chat models loaded from now on ("CPU" or a ggml backend name). Stored
+     * here and handed to the engine at load, so app start-up never touches the native library.
+     */
+    internal fun setPreferredBackend(name: String) {
+        preferredBackend = name
+    }
+
     /** RAM limits for prompt checkpoints in chat models loaded from now on. */
     internal fun setMemoryCheckpointBudget(budget: MemoryCheckpointBudget) {
         memoryCheckpointBudget = budget
@@ -175,6 +186,7 @@ internal object LocalModelRuntime {
             current.engine
         } else {
             unloadResident()
+            preferredBackend?.let(LlamaChatEngine::setPreferredBackend)
             val loaded = LlamaChatEngine(
                 identity.canonicalPath, identity.nCtx, identity.nThreads, identity.kvCacheType,
                 prefixCacheDirectory, prefixCacheMaxBytes, memoryCheckpointBudget,
