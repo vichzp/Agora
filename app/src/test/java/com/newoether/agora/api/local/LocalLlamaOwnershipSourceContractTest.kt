@@ -256,7 +256,7 @@ class LocalLlamaOwnershipSourceContractTest {
         assertTrue(provider.contains("is LlamaGenerationEvent.ToolCallsCompleted ->"))
         assertTrue(provider.contains("StreamEvent.ToolCallsRequest(calls)"))
         assertTrue(provider.contains("\"${'$'}{call.name}:${'$'}passKey:${'$'}{call.index}\""))
-        assertTrue(provider.contains("streamKey = \"local_tool_${'$'}{passKey}_${'$'}{call.index}\""))
+        assertTrue(provider.contains("streamKey = \"${'$'}{toolStreamPrefix}_${'$'}{call.index}\""))
         assertFalse(provider.contains("STOP_PATTERNS"))
         assertFalse(provider.contains("rawBuf"))
     }
