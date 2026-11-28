@@ -171,17 +171,8 @@ class GenerationManager(
         var endedAtGuidanceBoundary = false
         var endedForFollowUp = false
         var followUpParentMessageId: String? = null
-        val output = GenerationOutputAccumulator(toolExecutor, config.providerName) { stats ->
-            com.newoether.agora.data.LocalRunStatsStore.record(
-                modelMessageId,
-                com.newoether.agora.data.LocalRunStats(
-                    backend = stats.backend,
-                    promptProcessedTokens = stats.promptProcessedTokens,
-                    promptCachedTokens = stats.promptCachedTokens,
-                    promptMs = stats.promptMs,
-                    firstTokenMs = stats.firstTokenMs,
-                ),
-            )
+        val output = GenerationOutputAccumulator(toolExecutor, config.providerName) {
+            com.newoether.agora.data.LocalRunStatsStore.record(modelMessageId, it)
         }
         var parentId: String? = null
         var modelRunSequence = -1L

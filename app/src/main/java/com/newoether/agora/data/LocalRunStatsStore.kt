@@ -55,6 +55,18 @@ object LocalRunStatsStore {
         entries[messageId]
     }
 
+    /** Records the run details a local provider pass reported for [messageId]. */
+    fun record(messageId: String, event: com.newoether.agora.api.StreamEvent.LocalRunStats) = record(
+        messageId,
+        LocalRunStats(
+            backend = event.backend,
+            promptProcessedTokens = event.promptProcessedTokens,
+            promptCachedTokens = event.promptCachedTokens,
+            promptMs = event.promptMs,
+            firstTokenMs = event.firstTokenMs,
+        ),
+    )
+
     fun record(messageId: String, stats: LocalRunStats) = synchronized(this) {
         load()
         val merged = entries.remove(messageId)?.plus(stats) ?: stats
